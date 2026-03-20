@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "course-note"
+version = "0.1.0"
+description = "CLI tool for turning course videos into structured Markdown notes"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "OpenAI Codex" }]
+dependencies = [
+  "typer>=0.12,<1.0",
+  "pyscenedetect>=0.6.3,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9.0",
+]
+
+[project.scripts]
+course-note = "course_note.cli.main:run"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["course_note*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
