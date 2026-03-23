@@ -29,6 +29,7 @@ jobs:
       - name: Run Claude Code Action
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # 底線，非連字號
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # 底線，非連字號
           # claude_args: "--model claude-sonnet-4-6"  # 可選，v1 用 claude_args 傳參數
           # claude_args: "--max-turns 10"
