@@ -3,10 +3,14 @@ name: Claude Code Assistant
 on:
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 jobs:
   claude:
-    if: contains(github.event.comment.body, '@claude') || contains(github.event.comment.body, '@Claude')
+    if: |
+      contains(github.event.comment.body, '@claude') ||
+      contains(github.event.comment.body, '@Claude')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -14,10 +18,15 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Run Claude Code Action
         uses: anthropics/claude-code-action@v1
         with:
-          github-token: ${{ github.token }}  # 推薦用 github.token，更安全簡潔
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # model: claude-sonnet-4.6  # 可選，先註解用預設最新模型
-          # debug: true                       # debug 時開啟，log 會超詳細，之後再關
+          github_token: ${{ github.token }}       # 底線，非連字號
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # 底線，非連字號
+          # claude_args: "--model claude-sonnet-4-6"  # 可選，v1 用 claude_args 傳參數
+          # claude_args: "--max-turns 10"
