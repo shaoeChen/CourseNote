@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 authors = [{ name = "OpenAI Codex" }]
 dependencies = [
   "typer>=0.12,<1.0",
-  "pyscenedetect>=0.6.3,<1.0",
+  "scenedetect>=0.6.3,<1.0",
 ]
 
 [project.optional-dependencies]
