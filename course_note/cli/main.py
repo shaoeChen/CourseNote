@@ -49,10 +49,9 @@ def generate_impl(
     write_json(subtitle_result.transcript_json_path, [segment.to_dict() for segment in transcripts])
 
     video_path = VideoDownloader().download(url, workdir)
-    FrameSampler().sample(video_path, workdir / "frames", sample_interval)
-
     scenes = SceneDetectorService().detect(video_path, scene_threshold, min_segment_seconds)
     write_json(workdir / "scenes.json", scenes)
+    FrameSampler().sample_for_scenes(video_path, workdir / "frames", scenes, sample_interval)
 
     segments = SegmentBuilder().build(scenes, transcripts, workdir / "frames")
     write_json(workdir / "segments.json", [segment.to_dict() for segment in segments])
@@ -88,13 +87,21 @@ def generate_impl(
 
 
 if HAS_TYPER:
-    app = typer.Typer(help="Generate Markdown course notes from online course videos.")
+    app = typer.Typer(
+        help="Generate Markdown course notes from online course videos.",
+        no_args_is_help=True,
+    )
+
+    @app.callback()
+    def main() -> None:
+        """CLI entrypoint for CourseNote commands."""
+        return None
 
     @app.command()
     def generate(
         url: str = typer.Argument(..., help="Course video URL."),
         subtitle_lang: str = typer.Option("zh-TW", help="Preferred subtitle language."),
-        sample_interval: float = typer.Option(1.0, help="Frame sampling interval in seconds."),
+        sample_interval: float = typer.Option(1.0, help="Seconds after each scene start to capture the representative frame."),
         scene_threshold: float = typer.Option(27.0, help="PySceneDetect content threshold."),
         min_segment_seconds: int = typer.Option(20, help="Minimum segment duration in seconds."),
         llm_backend: str = typer.Option("ollama", help="LLM backend name."),

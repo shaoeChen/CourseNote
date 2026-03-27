@@ -10,7 +10,7 @@ class SceneDetectorService:
             from scenedetect import ContentDetector, SceneManager, open_video
         except ImportError as exc:
             raise RuntimeError(
-                "PySceneDetect is required for scene detection. Install 'pyscenedetect' to continue."
+                "PySceneDetect is required for scene detection. Install or sync 'scenedetect' in the active environment to continue."
             ) from exc
 
         video = open_video(str(video_path))
