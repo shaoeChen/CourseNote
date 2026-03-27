@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -54,5 +55,14 @@ class OpenAICompatibleClient:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"LLM request failed with status {exc.code}: {detail}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RuntimeError(
+                f"LLM request to {config.api_base} timed out after 120 seconds. "
+                "Check whether the backend is running and the model is available."
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Failed to reach the LLM backend at {config.api_base}: {exc.reason}"
+            ) from exc
         result = json.loads(body)
         return result["choices"][0]["message"]["content"].strip()
