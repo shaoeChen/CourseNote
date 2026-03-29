@@ -26,18 +26,21 @@ pip install -e .
 ## CLI
 
 ```bash
-course-note generate "https://youtube.com/..." \
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
-  --scene-threshold 27 \
   --min-segment-seconds 20 \
-  --scene-edge-weight 0.2 \
   --llm-backend ollama \
-  --model qwen2.5:7b \
+  --model qwen3:8b \
   --note-style summary \
+  --include-transcript \
   --with-course-summary \
   --with-key-terms \
   --output output.md
+```
+
+```shell
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ"   --subtitle-lang zh-TW   --sample-interval 1   --scene-threshold 27   --scene-edge-weight 0.2   --min-segment-seconds 20   --llm-backend ollama   --model qwen3:8b   --note-style summary   --include-transcript   --with-course-summary   --with-key-terms   --output output.md
 ```
 
 ## Workdir 結構
@@ -47,7 +50,6 @@ workdir/
   video.mp4
   subtitles.vtt
   transcript.json
-  scene_stats.csv
   frames/
   scenes.json
   segments.json

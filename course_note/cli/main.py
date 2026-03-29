@@ -34,6 +34,7 @@ def generate_impl(
     with_course_summary: bool = False,
     with_key_terms: bool = False,
     include_extra_notes: bool = False,
+    include_transcript: bool = False,
     output: Path = Path("output.md"),
     workdir: Path = Path("workdir"),
 ) -> None:
@@ -85,7 +86,7 @@ def generate_impl(
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(MarkdownRenderer().render(note), encoding="utf-8")
+    output.write_text(MarkdownRenderer().render(note, include_transcript=include_transcript), encoding="utf-8")
     message = f"Markdown note generated at {output}"
     if HAS_TYPER:
         typer.echo(message)
@@ -118,6 +119,7 @@ if HAS_TYPER:
         with_course_summary: bool = typer.Option(False, help="Generate whole-course summary."),
         with_key_terms: bool = typer.Option(False, help="Extract key terms."),
         include_extra_notes: bool = typer.Option(False, help="Allow explicit extra notes sections."),
+        include_transcript: bool = typer.Option(False, help="Include original transcript text in each segment."),
         output: Path = typer.Option(Path("output.md"), help="Output Markdown file."),
         workdir: Path = typer.Option(Path("workdir"), help="Working directory for artifacts."),
     ) -> None:
@@ -134,6 +136,7 @@ if HAS_TYPER:
             with_course_summary=with_course_summary,
             with_key_terms=with_key_terms,
             include_extra_notes=include_extra_notes,
+            include_transcript=include_transcript,
             output=output,
             workdir=workdir,
         )
@@ -158,6 +161,7 @@ else:
         generate_parser.add_argument("--with-course-summary", action="store_true")
         generate_parser.add_argument("--with-key-terms", action="store_true")
         generate_parser.add_argument("--include-extra-notes", action="store_true")
+        generate_parser.add_argument("--include-transcript", action="store_true")
         generate_parser.add_argument("--output", type=Path, default=Path("output.md"))
         generate_parser.add_argument("--workdir", type=Path, default=Path("workdir"))
         return parser
@@ -179,6 +183,7 @@ else:
                 with_course_summary=args.with_course_summary,
                 with_key_terms=args.with_key_terms,
                 include_extra_notes=args.include_extra_notes,
+                include_transcript=args.include_transcript,
                 output=args.output,
                 workdir=args.workdir,
             )
