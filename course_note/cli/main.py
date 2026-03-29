@@ -27,6 +27,7 @@ def generate_impl(
     sample_interval: float = 1.0,
     scene_threshold: float = 27.0,
     min_segment_seconds: int = 20,
+    scene_edge_weight: float = 0.0,
     llm_backend: str = "ollama",
     model: str = "qwen2.5:7b",
     note_style: str = "summary",
@@ -49,7 +50,13 @@ def generate_impl(
     write_json(subtitle_result.transcript_json_path, [segment.to_dict() for segment in transcripts])
 
     video_path = VideoDownloader().download(url, workdir)
-    scenes = SceneDetectorService().detect(video_path, scene_threshold, min_segment_seconds)
+    scenes = SceneDetectorService().detect(
+        video_path,
+        scene_threshold,
+        min_segment_seconds,
+        edge_weight=scene_edge_weight,
+        stats_csv_path=workdir / "scene_stats.csv",
+    )
     write_json(workdir / "scenes.json", scenes)
     FrameSampler().sample_for_scenes(video_path, workdir / "frames", scenes, sample_interval)
 
@@ -104,6 +111,7 @@ if HAS_TYPER:
         sample_interval: float = typer.Option(1.0, help="Seconds after each scene start to capture the representative frame."),
         scene_threshold: float = typer.Option(27.0, help="PySceneDetect content threshold."),
         min_segment_seconds: int = typer.Option(20, help="Minimum segment duration in seconds."),
+        scene_edge_weight: float = typer.Option(0.0, help="Weight for edge changes when detecting scene cuts; useful for slide/layout changes."),
         llm_backend: str = typer.Option("ollama", help="LLM backend name."),
         model: str = typer.Option("qwen2.5:7b", help="LLM model name."),
         note_style: str = typer.Option("summary", help="Prompt template name."),
@@ -119,6 +127,7 @@ if HAS_TYPER:
             sample_interval=sample_interval,
             scene_threshold=scene_threshold,
             min_segment_seconds=min_segment_seconds,
+            scene_edge_weight=scene_edge_weight,
             llm_backend=llm_backend,
             model=model,
             note_style=note_style,
@@ -142,6 +151,7 @@ else:
         generate_parser.add_argument("--sample-interval", type=float, default=1.0)
         generate_parser.add_argument("--scene-threshold", type=float, default=27.0)
         generate_parser.add_argument("--min-segment-seconds", type=int, default=20)
+        generate_parser.add_argument("--scene-edge-weight", type=float, default=0.0)
         generate_parser.add_argument("--llm-backend", default="ollama")
         generate_parser.add_argument("--model", default="qwen2.5:7b")
         generate_parser.add_argument("--note-style", default="summary")
@@ -162,6 +172,7 @@ else:
                 sample_interval=args.sample_interval,
                 scene_threshold=args.scene_threshold,
                 min_segment_seconds=args.min_segment_seconds,
+                scene_edge_weight=args.scene_edge_weight,
                 llm_backend=args.llm_backend,
                 model=args.model,
                 note_style=args.note_style,

@@ -29,7 +29,9 @@ pip install -e .
 course-note generate "https://youtube.com/..." \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
+  --scene-threshold 27 \
   --min-segment-seconds 20 \
+  --scene-edge-weight 0.2 \
   --llm-backend ollama \
   --model qwen2.5:7b \
   --note-style summary \
@@ -45,6 +47,7 @@ workdir/
   video.mp4
   subtitles.vtt
   transcript.json
+  scene_stats.csv
   frames/
   scenes.json
   segments.json

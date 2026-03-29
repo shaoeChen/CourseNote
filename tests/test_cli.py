@@ -33,6 +33,8 @@ def test_generate_subcommand_accepts_url(monkeypatch: pytest.MonkeyPatch) -> Non
         [
             "generate",
             "https://example.com/watch?v=demo",
+            "--scene-edge-weight",
+            "0.2",
             "--output",
             "notes.md",
         ],
@@ -40,4 +42,5 @@ def test_generate_subcommand_accepts_url(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert result.exit_code == 0
     assert captured["url"] == "https://example.com/watch?v=demo"
+    assert captured["scene_edge_weight"] == 0.2
     assert captured["output"] == Path("notes.md")
