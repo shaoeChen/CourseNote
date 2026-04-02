@@ -5,7 +5,7 @@ from pathlib import Path
 from course_note.video.frames import FrameSampler
 
 
-def test_sample_for_scenes_clears_existing_frames_and_uses_scene_starts(tmp_path: Path) -> None:
+def test_sample_for_scenes_clears_existing_frames_and_uses_scene_ends(tmp_path: Path) -> None:
     frames_dir = tmp_path / "frames"
     frames_dir.mkdir()
     (frames_dir / "stale.jpg").write_text("old", encoding="utf-8")
@@ -26,12 +26,12 @@ def test_sample_for_scenes_clears_existing_frames_and_uses_scene_starts(tmp_path
     sampler.sample_for_scenes(video_path, frames_dir, scenes, sample_offset_seconds=1.0)
 
     assert not (frames_dir / "stale.jpg").exists()
-    assert [item[1].name for item in captured] == ["000000.jpg", "000010.jpg"]
-    assert [item[2] for item in captured] == [1.0, 11.0]
+    assert [item[1].name for item in captured] == ["000010.jpg", "000012.jpg"]
+    assert [item[2] for item in captured] == [9.0, 11.0]
 
 
 def test_choose_capture_timestamp_stays_within_scene() -> None:
     sampler = FrameSampler()
 
-    assert sampler._choose_capture_timestamp(5.0, 5.1, 1.0) == 5.0
-    assert sampler._choose_capture_timestamp(5.0, 20.0, 2.0) == 7.0
+    assert sampler._choose_capture_timestamp(5.0, 5.1, 1.0) == 5.1
+    assert sampler._choose_capture_timestamp(5.0, 20.0, 2.0) == 18.0

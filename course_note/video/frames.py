@@ -20,7 +20,7 @@ class FrameSampler:
             start_sec = scene["start_sec"]
             end_sec = scene["end_sec"]
             timestamp = self._choose_capture_timestamp(start_sec, end_sec, sample_offset_seconds)
-            output_path = frames_dir / format_compact_filename(start_sec)
+            output_path = frames_dir / format_compact_filename(end_sec)
             self._capture_frame(video_path, output_path, timestamp)
 
     def _clear_existing_frames(self, frames_dir: Path) -> None:
@@ -35,10 +35,10 @@ class FrameSampler:
     ) -> float:
         scene_duration = max(end_sec - start_sec, 0.0)
         if scene_duration <= 0:
-            return max(start_sec, 0.0)
+            return max(end_sec, 0.0)
         # Stay slightly inside the scene to avoid grabbing the transition frame.
         max_offset = max(scene_duration - 0.25, 0.0)
-        return max(start_sec + min(sample_offset_seconds, max_offset), 0.0)
+        return max(end_sec - min(sample_offset_seconds, max_offset), 0.0)
 
     def _capture_frame(self, video_path: Path, output_path: Path, timestamp: float) -> None:
         subprocess.run(
