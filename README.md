@@ -27,6 +27,7 @@ pip install -e .
 
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
+  --course-name "FastAPI 入門" \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
   --min-segment-seconds 20 \
@@ -40,19 +41,21 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
 ```
 
 ```shell
-course-note generate "https://www.youtube.com/watch?v=urwDLyNa9FU&t"   --subtitle-lang zh-TW   --sample-interval 1   --scene-threshold 27   --scene-edge-weight 0.2   --min-segment-seconds 20   --llm-backend ollama   --model qwen3:8b   --note-style near_transcript   --include-transcript   --with-course-summary   --with-key-terms   --output output2.md
+course-note generate "https://www.youtube.com/watch?v=urwDLyNa9FU"   --course-name "AI Agent (1/3)：核心技術 Context Engineering 基本概念解說"   --subtitle-lang zh-TW   --sample-interval 1   --scene-threshold 27   --scene-edge-weight 0.2   --min-segment-seconds 20   --llm-backend ollama   --model gemma4:e4b   --note-style near_transcript   --include-transcript   --with-course-summary   --with-key-terms   --output output3.md
 ```
 
 若要把已產生的 Markdown 筆記發布到 HackMD，並自動把 `簡報：000243.jpg` 這類段落對應的本機圖片上傳後插入到該段落下方，可使用：
 
 ```bash
-course-note publish-hackmd output.md
+course-note publish-hackmd output.md --course-name "Python 資料分析"
 ```
 
-預設會從 `workdir/frames` 尋找圖片。若圖片在別的位置，可改用：
+??????????? HackMD ???????????????????
+
+預設會從 `workdir/<course-name>/frames` 尋找圖片。若圖片在別的位置，可改用：
 
 ```bash
-course-note publish-hackmd output.md --image-dir path/to/frames
+course-note publish-hackmd output.md --course-name "Python 資料分析" --image-dir path/to/frames
 ```
 
 請先在 `.env` 或環境變數中設定：
@@ -62,7 +65,7 @@ HACKMD_API=your_hackmd_token
 ```
 
 ```shell
-course-note rewrite-notes   --workdir workdir   --source-note output.md   --llm-backend ollama   --model qwen3:8b   --note-style near_transcript   --with-course-summary   --with-key-terms   --output output.md
+course-note rewrite-notes   --workdir workdir   --course-name "Python 資料分析"   --source-note output.md   --llm-backend ollama   --model gemma4:e4b   --note-style near_transcript   --with-course-summary   --with-key-terms   --output output.md
 
 
 ```
@@ -138,6 +141,7 @@ course-note rewrite-notes   --workdir workdir   --source-note output.md   --llm-
 
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
+  --course-name "FastAPI 入門" \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
   --scene-threshold 27 \
@@ -154,6 +158,7 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
 
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
+  --course-name "FastAPI 入門" \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
   --scene-threshold 30 \
@@ -195,13 +200,17 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
 
 ## Workdir 結構
 
+`generate` 現在會把 `--workdir` 當成「課程工作區根目錄」，每個 `--course-name` 會對應到一個固定子資料夾。相同 `course name` 會共用同一份 `video.mp4` 與 `subtitles.vtt` 快取，但 `frames/`、`scenes.json`、`segments.json`、`llm_outputs.json` 會在每次執行時重建。同一個 `course name` 若改拿去跑不同 URL，程式會直接報錯，避免誤用舊快取。
+
 ```text
 workdir/
-  video.mp4
-  subtitles.vtt
-  transcript.json
-  frames/
-  scenes.json
-  segments.json
-  llm_outputs.json
+  Python 資料分析/
+    course_metadata.json
+    video.mp4
+    subtitles.vtt
+    transcript.json
+    frames/
+    scenes.json
+    segments.json
+    llm_outputs.json
 ```

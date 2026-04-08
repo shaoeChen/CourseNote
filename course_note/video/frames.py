@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
+from course_note.utils.subprocess_utils import run_command
 from course_note.utils.timefmt import format_compact_filename
 
 
@@ -41,7 +41,7 @@ class FrameSampler:
         return max(end_sec - min(sample_offset_seconds, max_offset), 0.0)
 
     def _capture_frame(self, video_path: Path, output_path: Path, timestamp: float) -> None:
-        subprocess.run(
+        run_command(
             [
                 "ffmpeg",
                 "-y",
@@ -52,8 +52,5 @@ class FrameSampler:
                 "-frames:v",
                 "1",
                 str(output_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+            ]
         )

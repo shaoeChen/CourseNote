@@ -35,6 +35,8 @@ def test_generate_subcommand_accepts_url(monkeypatch: pytest.MonkeyPatch) -> Non
         [
             "generate",
             "https://example.com/watch?v=demo",
+            "--course-name",
+            "demo-course",
             "--scene-edge-weight",
             "0.2",
             "--output",
@@ -44,8 +46,49 @@ def test_generate_subcommand_accepts_url(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert result.exit_code == 0
     assert captured["url"] == "https://example.com/watch?v=demo"
+    assert captured["course_name"] == "demo-course"
     assert captured["scene_edge_weight"] == 0.2
     assert captured["output"] == Path("notes.md")
+
+
+def test_generate_subcommand_accepts_llm_timeout_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def fake_generate_impl(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "generate_impl", fake_generate_impl)
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "generate",
+            "https://example.com/watch?v=demo",
+            "--course-name",
+            "demo-course",
+            "--llm-timeout-seconds",
+            "300",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["llm_timeout_seconds"] == 300
+
+
+def test_generate_subcommand_requires_course_name() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "generate",
+            "https://example.com/watch?v=demo",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--course-name" in result.output
 
 
 def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -62,6 +105,8 @@ def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyP
         [
             "publish-hackmd",
             "output.md",
+            "--course-name",
+            "demo-course",
             "--title",
             "HackMD Demo",
             "--image-dir",
@@ -71,8 +116,24 @@ def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyP
 
     assert result.exit_code == 0
     assert captured["note_path"] == Path("output.md")
+    assert captured["course_name"] == "demo-course"
     assert captured["title"] == "HackMD Demo"
     assert captured["image_dir"] == Path("frames")
+
+
+def test_publish_hackmd_subcommand_requires_course_name() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "publish-hackmd",
+            "output.md",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--course-name" in result.output
 
 
 def test_rewrite_notes_subcommand_accepts_workdir_and_source_note(monkeypatch: pytest.MonkeyPatch) -> None:

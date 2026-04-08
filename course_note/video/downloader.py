@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+
+from course_note.utils.subprocess_utils import run_command
 
 
 class VideoDownloader:
     def download(self, url: str, workdir: Path) -> Path:
         output_path = workdir / "video.mp4"
-        subprocess.run(
+        run_command(
             [
                 "yt-dlp",
                 "-f",
@@ -15,9 +16,6 @@ class VideoDownloader:
                 "-o",
                 str(output_path),
                 url,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+            ]
         )
         return output_path

@@ -77,17 +77,21 @@ def test_publish_markdown_uploads_images_and_creates_final_note(tmp_path: Path) 
     client = DummyHackMDClient()
     result = HackMDPublisher(client=client).publish_markdown(note_path, image_dir=image_dir)
 
-    assert len(client.created) == 2
-    assert client.created[0]["title"].startswith("[CourseNote Assets]")
-    assert client.created[0]["read_permission"] == "owner"
-    assert client.created[0]["write_permission"] == "owner"
-    assert client.created[1]["title"] == "Demo Title"
-    assert "簡報：000243.jpg\n![000243.jpg](https://hackmd.io/_uploads/000243.jpg)\n時間：00:02:43 ~ 00:04:51" in client.created[1]["content"]
+    assert len(client.created) == 1
+    assert client.created[0]["title"] == "Demo Title"
+    assert client.created[0]["content"] == "# Demo Title\n\n##\n簡報：000243.jpg\n時間：00:02:43 ~ 00:04:51\n重點：內容\n"
+    assert client.created[0]["read_permission"] == ""
+    assert client.created[0]["write_permission"] == ""
     assert client.uploaded == [("asset-note-123", image_path.resolve())]
-    assert client.updated == []
+    assert client.updated == [
+        {
+            "note_id": "asset-note-123",
+            "short_id": "asset-short-123",
+            "content": "# Demo Title\n\n##\n簡報：000243.jpg\n![000243.jpg](https://hackmd.io/_uploads/000243.jpg)\n時間：00:02:43 ~ 00:04:51\n重點：內容\n",
+        }
+    ]
     assert result.image_count == 1
-    assert result.publish_link == "https://hackmd.io/@demo/note-123"
-    assert result.asset_note_id == "asset-note-123"
+    assert result.publish_link == "https://hackmd.io/@demo/asset-note"
 
 
 def test_publish_markdown_uses_file_stem_when_heading_missing(tmp_path: Path) -> None:
@@ -114,7 +118,6 @@ def test_publish_markdown_without_images_creates_single_note(tmp_path: Path) -> 
     assert client.created[0]["title"] == "Demo Title"
     assert client.uploaded == []
     assert result.image_count == 0
-    assert result.asset_note_id is None
 
 
 def test_update_note_retries_transient_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,6 +200,37 @@ def test_upload_image_retries_transient_errors(monkeypatch: pytest.MonkeyPatch, 
 
     assert link == "https://hackmd.io/_uploads/demo.jpg"
     assert sleeps == [15.0]
+
+
+def test_upload_image_normalizes_root_relative_links(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    client = HackMDClient(
+        api_base="https://api.hackmd.test/v1",
+        api_token="token",
+        upload_spacing_seconds=0,
+    )
+    image_path = tmp_path / "demo.jpg"
+    image_path.write_bytes(b"image")
+
+    def fake_request_json(
+        method: str,
+        path: str,
+        *,
+        payload: bytes,
+        content_type: str,
+        expected_statuses: tuple[int, ...],
+    ) -> dict[str, dict[str, str]]:
+        assert method == "POST"
+        assert path == "/notes/note-123/images"
+        assert content_type.startswith("multipart/form-data; boundary=")
+        assert expected_statuses == (200, 201)
+        return {"data": {"link": "/_uploads/demo.jpg"}}
+
+    monkeypatch.setattr(client, "_request_json", fake_request_json)
+    monkeypatch.setattr(client, "_sleep_before_retry", lambda delay: None)
+
+    link = client.upload_image("note-123", image_path)
+
+    assert link == "https://hackmd.io/_uploads/demo.jpg"
 
 
 def test_request_json_waits_for_rate_limit_reset(monkeypatch: pytest.MonkeyPatch) -> None:

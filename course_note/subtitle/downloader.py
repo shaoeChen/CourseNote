@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from course_note.utils.subprocess_utils import run_command
 
 
 @dataclass(slots=True)
@@ -62,14 +63,9 @@ class YouTubeSubtitleDownloader:
         raise RuntimeError(f"No subtitles available for language '{language}'.")
 
     def _extract_info(self, url: str) -> dict:
-        output = subprocess.run(
-            ["yt-dlp", "--dump-single-json", "--skip-download", url],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        output = run_command(["yt-dlp", "--dump-single-json", "--skip-download", url])
         return json.loads(output.stdout)
 
     @staticmethod
     def _run(command: list[str]) -> None:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        run_command(command)

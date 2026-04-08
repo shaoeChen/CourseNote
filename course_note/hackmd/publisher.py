@@ -8,6 +8,7 @@ import socket
 import time
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,6 @@ DEFAULT_UPDATE_RETRY_DELAY_SECONDS = 1.0
 DEFAULT_UPLOAD_RETRY_ATTEMPTS = 8
 DEFAULT_UPLOAD_RETRY_DELAY_SECONDS = 5.0
 DEFAULT_UPLOAD_SPACING_SECONDS = 1.0
-ASSET_NOTE_TITLE_PREFIX = "[CourseNote Assets]"
 
 
 @dataclass(slots=True)
@@ -42,7 +42,6 @@ class HackMDPublishResult:
     publish_link: str | None
     permalink: str | None
     image_count: int
-    asset_note_id: str | None = None
 
 
 class HackMDRequestError(RuntimeError):
@@ -168,6 +167,7 @@ class HackMDClient:
                 link = self._extract_text(response, "link")
                 if not link:
                     raise RuntimeError(f"HackMD image upload response did not include a link: {response!r}")
+                link = self._normalize_upload_link(link)
                 if self.upload_spacing_seconds > 0:
                     self._sleep_before_retry(self.upload_spacing_seconds)
                 return link
@@ -366,6 +366,14 @@ class HackMDClient:
                     return value
         return None
 
+    def _normalize_upload_link(self, link: str) -> str:
+        parsed = urllib.parse.urlparse(link)
+        if parsed.scheme and parsed.netloc:
+            return link
+        if link.startswith("/"):
+            return urllib.parse.urljoin("https://hackmd.io", link)
+        return link
+
 
 class HackMDPublisher:
     def __init__(self, client: HackMDClient | None = None) -> None:
@@ -392,26 +400,20 @@ class HackMDPublisher:
                 image_count=0,
             )
 
-        asset_note = self.client.create_note(
-            self._build_asset_note_title(note_title),
-            self._build_asset_note_content(note_title),
-            read_permission="owner",
-            write_permission="owner",
-        )
+        created_note = self.client.create_note(note_title, content)
         enriched_content, image_count = self._inject_uploaded_images(
             content,
             note_path=note_path,
-            note_id=asset_note.note_id,
+            note_id=created_note.note_id,
             image_dir=image_dir,
         )
-        created_note = self.client.create_note(note_title, enriched_content)
+        self.client.update_note(created_note, content=enriched_content)
         return HackMDPublishResult(
             note_id=created_note.note_id,
             title=note_title,
             publish_link=created_note.publish_link,
             permalink=created_note.permalink,
             image_count=image_count,
-            asset_note_id=asset_note.note_id,
         )
 
     def _inject_uploaded_images(
@@ -447,16 +449,6 @@ class HackMDPublisher:
 
     def _contains_local_images(self, content: str) -> bool:
         return any(SCREENSHOT_LINE_RE.match(line) for line in content.splitlines())
-
-    def _build_asset_note_title(self, note_title: str) -> str:
-        return f"{ASSET_NOTE_TITLE_PREFIX} {note_title}"
-
-    def _build_asset_note_content(self, note_title: str) -> str:
-        return (
-            f"# {ASSET_NOTE_TITLE_PREFIX} {note_title}\n\n"
-            "This note stores uploaded images for a CourseNote-published document.\n"
-            "Do not delete this note, or the published note images will stop working.\n"
-        )
 
     def _resolve_image_path(self, image_ref: str, note_path: Path, image_dir: Path | None) -> Path:
         candidate = Path(image_ref)
