@@ -12,8 +12,8 @@ class LLMService:
     def summarize_segments(
         self,
         segments: list[SlideSegment],
-        backend: str,
-        model: str,
+        backend: str | None,
+        model: str | None,
         note_style: str,
         include_extra_notes: bool,
         timeout_seconds: int | None = None,
@@ -36,8 +36,8 @@ class LLMService:
     def summarize_course(
         self,
         segments: list[SlideSegment],
-        backend: str,
-        model: str,
+        backend: str | None,
+        model: str | None,
         timeout_seconds: int | None = None,
     ) -> str:
         config = self.client.resolve_config(backend, model, timeout_seconds=timeout_seconds)
@@ -48,8 +48,8 @@ class LLMService:
     def extract_key_terms(
         self,
         segments: list[SlideSegment],
-        backend: str,
-        model: str,
+        backend: str | None,
+        model: str | None,
         timeout_seconds: int | None = None,
     ) -> list[str]:
         config = self.client.resolve_config(backend, model, timeout_seconds=timeout_seconds)

@@ -17,27 +17,119 @@ class ProviderConfig:
     timeout_seconds: int
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderDefaults:
+    env_prefix: str
+    default_api_base: str
+    default_api_key: str
+    default_model: str
+
+
 class OpenAICompatibleClient:
     DEFAULTS = {
-        "ollama": ("http://localhost:11434/v1", "ollama"),
-        "vllm": ("http://localhost:8000/v1", "EMPTY"),
-        "llama.cpp": ("http://localhost:8080/v1", "EMPTY"),
-        "zai": ("https://open.bigmodel.cn/api/paas/v4", ""),
+        "ollama": ProviderDefaults(
+            env_prefix="OLLAMA",
+            default_api_base="http://localhost:11434/v1",
+            default_api_key="ollama",
+            default_model="qwen2.5:7b",
+        ),
+        "vllm": ProviderDefaults(
+            env_prefix="VLLM",
+            default_api_base="http://localhost:8000/v1",
+            default_api_key="EMPTY",
+            default_model="Qwen/Qwen2.5-7B-Instruct",
+        ),
+        "llama.cpp": ProviderDefaults(
+            env_prefix="LLAMACPP",
+            default_api_base="http://localhost:8080/v1",
+            default_api_key="EMPTY",
+            default_model="Qwen/Qwen2.5-7B-Instruct",
+        ),
+        "zai": ProviderDefaults(
+            env_prefix="ZAI",
+            default_api_base="https://open.bigmodel.cn/api/paas/v4",
+            default_api_key="",
+            default_model="glm-4.5-air",
+        ),
     }
 
-    def resolve_config(self, backend: str, model: str, timeout_seconds: int | None = None) -> ProviderConfig:
-        default_base, default_key = self.DEFAULTS.get(backend, (os.getenv("OPENAI_API_BASE", ""), os.getenv("OPENAI_API_KEY", "")))
-        api_base = os.getenv("COURSE_NOTE_API_BASE", default_base)
-        api_key = os.getenv("COURSE_NOTE_API_KEY", default_key)
+    BACKEND_ALIASES = {
+        "ollama": "ollama",
+        "vllm": "vllm",
+        "llama.cpp": "llama.cpp",
+        "llamacpp": "llama.cpp",
+        "zai": "zai",
+    }
+
+    def resolve_config(
+        self,
+        backend: str | None,
+        model: str | None,
+        timeout_seconds: int | None = None,
+    ) -> ProviderConfig:
+        resolved_backend = self._resolve_backend_name(backend)
+        defaults = self.DEFAULTS[resolved_backend]
+        api_base = self._resolve_api_base(defaults)
+        api_key = self._resolve_api_key(defaults)
+        resolved_model = self._resolve_model(defaults, model)
         resolved_timeout = timeout_seconds if timeout_seconds is not None else int(os.getenv("COURSE_NOTE_LLM_TIMEOUT_SECONDS", "120"))
         if not api_base:
-            raise RuntimeError(f"No API base configured for backend '{backend}'.")
+            raise RuntimeError(f"No API base configured for backend '{resolved_backend}'.")
         return ProviderConfig(
-            backend=backend,
-            model=model,
+            backend=resolved_backend,
+            model=resolved_model,
             api_base=api_base,
             api_key=api_key,
             timeout_seconds=resolved_timeout,
+        )
+
+    def _resolve_backend_name(self, backend: str | None) -> str:
+        requested_backend = backend or os.getenv("COURSE_NOTE_PROVIDER") or "ollama"
+        normalized_backend = self.BACKEND_ALIASES.get(requested_backend.strip().lower())
+        if normalized_backend is None:
+            supported = ", ".join(sorted(self.DEFAULTS))
+            raise RuntimeError(
+                f"Unsupported LLM backend '{requested_backend}'. Supported backends: {supported}."
+            )
+        return normalized_backend
+
+    def _resolve_api_base(self, defaults: ProviderDefaults) -> str:
+        env_prefix = defaults.env_prefix
+        provider_api_base = os.getenv(f"COURSE_NOTE_{env_prefix}_API_BASE")
+        if provider_api_base:
+            return provider_api_base
+
+        legacy_api_base = os.getenv("COURSE_NOTE_API_BASE")
+        if legacy_api_base:
+            return legacy_api_base
+
+        host = os.getenv(f"COURSE_NOTE_{env_prefix}_HOST")
+        if not host:
+            return defaults.default_api_base
+
+        scheme = os.getenv(f"COURSE_NOTE_{env_prefix}_SCHEME", "http")
+        port = os.getenv(f"COURSE_NOTE_{env_prefix}_PORT")
+        path = os.getenv(f"COURSE_NOTE_{env_prefix}_PATH", "/v1")
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        host_with_port = f"{host}:{port}" if port else host
+        return f"{scheme}://{host_with_port}{normalized_path}"
+
+    def _resolve_api_key(self, defaults: ProviderDefaults) -> str:
+        env_prefix = defaults.env_prefix
+        return (
+            os.getenv(f"COURSE_NOTE_{env_prefix}_API_KEY")
+            or os.getenv("COURSE_NOTE_API_KEY")
+            or defaults.default_api_key
+        )
+
+    def _resolve_model(self, defaults: ProviderDefaults, model: str | None) -> str:
+        if model:
+            return model
+        env_prefix = defaults.env_prefix
+        return (
+            os.getenv(f"COURSE_NOTE_{env_prefix}_MODEL")
+            or os.getenv("COURSE_NOTE_MODEL")
+            or defaults.default_model
         )
 
     def chat(self, config: ProviderConfig, prompt: str) -> str:

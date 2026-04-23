@@ -76,6 +76,30 @@ def test_generate_subcommand_accepts_llm_timeout_seconds(monkeypatch: pytest.Mon
     assert captured["llm_timeout_seconds"] == 300
 
 
+def test_generate_subcommand_leaves_llm_backend_and_model_to_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def fake_generate_impl(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "generate_impl", fake_generate_impl)
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "generate",
+            "https://example.com/watch?v=demo",
+            "--course-name",
+            "demo-course",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["llm_backend"] is None
+    assert captured["model"] is None
+
+
 def test_generate_subcommand_requires_course_name() -> None:
     runner = CliRunner()
 
@@ -94,6 +118,8 @@ def test_generate_subcommand_requires_course_name() -> None:
 def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = CliRunner()
     captured: dict[str, object] = {}
+    note_path = Path("output.md")
+    note_path.write_text("# demo\n", encoding="utf-8")
 
     def fake_publish_hackmd_impl(**kwargs: object) -> None:
         captured.update(kwargs)
@@ -119,10 +145,13 @@ def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyP
     assert captured["course_name"] == "demo-course"
     assert captured["title"] == "HackMD Demo"
     assert captured["image_dir"] == Path("frames")
+    note_path.unlink()
 
 
 def test_publish_hackmd_subcommand_requires_course_name() -> None:
     runner = CliRunner()
+    note_path = Path("output.md")
+    note_path.write_text("# demo\n", encoding="utf-8")
 
     result = runner.invoke(
         cli_main.app,
@@ -134,6 +163,7 @@ def test_publish_hackmd_subcommand_requires_course_name() -> None:
 
     assert result.exit_code != 0
     assert "--course-name" in result.output
+    note_path.unlink()
 
 
 def test_rewrite_notes_subcommand_accepts_workdir_and_source_note(monkeypatch: pytest.MonkeyPatch) -> None:

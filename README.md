@@ -23,7 +23,38 @@ pip install -e .
 - `ffmpeg`
 - 可選的 OpenAI-compatible API / Ollama 服務
 
+建議先複製一份環境設定：
+
+```bash
+cp .env.example .env
+```
+
+接著在 `.env` 指定預設 provider、主機與埠號。這樣平常執行 `generate` 或 `rewrite-notes` 時，不一定要每次都手動帶 `--llm-backend`。
+
+```env
+COURSE_NOTE_PROVIDER=llamacpp
+COURSE_NOTE_LLAMACPP_HOST=127.0.0.1
+COURSE_NOTE_LLAMACPP_PORT=8080
+COURSE_NOTE_LLAMACPP_MODEL=Qwen/Qwen2.5-7B-Instruct
+```
+
+如果你用 Docker Compose 或反向代理調整過 port，也可以直接改成：
+
+```env
+COURSE_NOTE_PROVIDER=vllm
+COURSE_NOTE_VLLM_HOST=192.168.1.20
+COURSE_NOTE_VLLM_PORT=9000
+```
+
+若 provider 的路徑不是標準 `/v1`，或你想完全自行控制 endpoint，可直接覆蓋完整 API base：
+
+```env
+COURSE_NOTE_LLAMACPP_API_BASE=http://127.0.0.1:8080/v1
+```
+
 ## CLI
+
+以下範例使用 `.env` 內的預設 provider 與 model：
 
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
@@ -31,12 +62,20 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
   --min-segment-seconds 20 \
-  --llm-backend ollama \
-  --model qwen3:8b \
   --note-style summary \
   --include-transcript \
   --with-course-summary \
   --with-key-terms \
+  --output output.md
+```
+
+若只想單次覆蓋 provider 或 model，CLI 參數仍然優先：
+
+```bash
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
+  --course-name "FastAPI 入門" \
+  --llm-backend vllm \
+  --model Qwen/Qwen2.5-7B-Instruct \
   --output output.md
 ```
 
