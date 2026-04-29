@@ -72,6 +72,8 @@ COURSE_NOTE_LLAMACPP_API_BASE=http://127.0.0.1:8080/v1
 
 ### `generate`
 
+`generate` 會固定輸出到 `workdir/<course-name>/article.md`；目前沒有 `--output` 參數。若要改變輸出根目錄，請使用 `--workdir`。
+
 `bash`：
 
 ```bash
@@ -259,6 +261,7 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --scene-threshold 27 \
   --scene-edge-weight 0.2 \
   --min-segment-seconds 20 \
+  --workdir workdir \
   --llm-backend ollama \
   --model qwen3:8b \
   --note-style near_transcript \
@@ -273,6 +276,7 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
   --scene-threshold 27 `
   --scene-edge-weight 0.2 `
   --min-segment-seconds 20 `
+  --workdir workdir `
   --llm-backend ollama `
   --model qwen3:8b `
   --note-style near_transcript `
@@ -289,6 +293,7 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --scene-threshold 30 \
   --scene-edge-weight 0.0 \
   --min-segment-seconds 30 \
+  --workdir workdir \
   --llm-backend ollama \
   --model qwen3:8b \
   --note-style near_transcript \
@@ -303,6 +308,7 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
   --scene-threshold 30 `
   --scene-edge-weight 0.0 `
   --min-segment-seconds 30 `
+  --workdir workdir `
   --llm-backend ollama `
   --model qwen3:8b `
   --note-style near_transcript `
