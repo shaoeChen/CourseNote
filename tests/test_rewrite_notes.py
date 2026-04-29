@@ -58,7 +58,6 @@ def test_rewrite_notes_impl_reuses_existing_segments_and_note_metadata(
         "# Demo Title\n\nhttps://example.com/watch?v=demo\n",
         encoding="utf-8",
     )
-    output_path = tmp_path / "rewritten.md"
 
     monkeypatch.setattr(cli_main, "LLMService", lambda: _FakeLLMService())
 
@@ -72,10 +71,9 @@ def test_rewrite_notes_impl_reuses_existing_segments_and_note_metadata(
         with_key_terms=True,
         include_extra_notes=True,
         include_transcript=True,
-        output=output_path,
     )
 
-    rendered = output_path.read_text(encoding="utf-8")
+    rendered = (workdir / "article.md").read_text(encoding="utf-8")
     llm_outputs = json.loads((workdir / "llm_outputs.json").read_text(encoding="utf-8"))
 
     assert "Demo Title" in rendered
@@ -104,8 +102,6 @@ def test_rewrite_notes_impl_allows_title_and_url_overrides(monkeypatch, tmp_path
         ),
         encoding="utf-8",
     )
-    output_path = tmp_path / "rewritten.md"
-
     monkeypatch.setattr(cli_main, "LLMService", lambda: _FakeLLMService())
 
     cli_main.rewrite_notes_impl(
@@ -116,10 +112,9 @@ def test_rewrite_notes_impl_allows_title_and_url_overrides(monkeypatch, tmp_path
         llm_backend="ollama",
         model="demo-model",
         note_style="structured",
-        output=output_path,
     )
 
-    rendered = output_path.read_text(encoding="utf-8")
+    rendered = (workdir / "article.md").read_text(encoding="utf-8")
 
     assert "Manual Title" in rendered
     assert "https://example.com/manual" in rendered

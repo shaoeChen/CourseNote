@@ -1,15 +1,18 @@
 # CourseNote
 
-CourseNote 是一個本地端 CLI 工具，用來將 YouTube 課程影片整理成結構化 Markdown 筆記。
+CourseNote 是一個本地端 CLI 工具，用來把 YouTube 課程影片整理成結構化 Markdown 筆記。
+
+它會下載字幕與影片、偵測場景切換、擷取每段代表畫面，再把逐段內容交給 OpenAI-compatible LLM 改寫成可閱讀的課程筆記。
 
 ## 功能
 
-- 下載 YouTube 影片資訊、影片檔與字幕
-- 優先使用原生字幕，次選自動字幕；無字幕直接失敗
-- 以 ffmpeg 抽幀並保留中間產物
+- 下載 YouTube 影片、字幕與中繼資料
+- 優先使用原生字幕，次選自動字幕；沒有字幕時直接失敗
 - 使用 PySceneDetect 做 scene detection
-- 將字幕依段落對齊後交給 OpenAI-compatible LLM 摘要
-- 輸出單一 Markdown 筆記檔
+- 依場景切段，並擷取每段代表截圖
+- 將逐段字幕改寫成結構化 Markdown 筆記
+- 可額外產生課程摘要與關鍵詞
+- 可將產出的 Markdown 發布到 HackMD
 
 ## 安裝
 
@@ -21,7 +24,7 @@ pip install -e .
 
 - `yt-dlp`
 - `ffmpeg`
-- 可選的 OpenAI-compatible API / Ollama 服務
+- 一個可用的 OpenAI-compatible API，例如 Ollama、llama.cpp server、vLLM
 
 建議先複製一份環境設定：
 
@@ -29,7 +32,17 @@ pip install -e .
 cp .env.example .env
 ```
 
-接著在 `.env` 指定預設 provider、主機與埠號。這樣平常執行 `generate` 或 `rewrite-notes` 時，不一定要每次都手動帶 `--llm-backend`。
+如果你在 Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+## LLM 設定
+
+你可以在 `.env` 中指定預設 provider、主機、port 與 model。設定好之後，平常執行 `generate` 或 `rewrite-notes` 就不一定要每次手動帶 `--llm-backend`。
+
+例如使用 `llama.cpp`：
 
 ```env
 COURSE_NOTE_PROVIDER=llamacpp
@@ -38,15 +51,16 @@ COURSE_NOTE_LLAMACPP_PORT=8080
 COURSE_NOTE_LLAMACPP_MODEL=Qwen/Qwen2.5-7B-Instruct
 ```
 
-如果你用 Docker Compose 或反向代理調整過 port，也可以直接改成：
+例如使用 `vllm`：
 
 ```env
 COURSE_NOTE_PROVIDER=vllm
 COURSE_NOTE_VLLM_HOST=192.168.1.20
 COURSE_NOTE_VLLM_PORT=9000
+COURSE_NOTE_VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 ```
 
-若 provider 的路徑不是標準 `/v1`，或你想完全自行控制 endpoint，可直接覆蓋完整 API base：
+如果你用 Docker Compose、反向代理，或路徑不是標準 `/v1`，也可以直接覆蓋完整 endpoint：
 
 ```env
 COURSE_NOTE_LLAMACPP_API_BASE=http://127.0.0.1:8080/v1
@@ -54,7 +68,11 @@ COURSE_NOTE_LLAMACPP_API_BASE=http://127.0.0.1:8080/v1
 
 ## CLI
 
-以下範例使用 `.env` 內的預設 provider 與 model：
+以下範例使用 `.env` 內設定的預設 provider 與 model。
+
+### `generate`
+
+`bash`：
 
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
@@ -65,48 +83,103 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --note-style summary \
   --include-transcript \
   --with-course-summary \
-  --with-key-terms \
-  --output output.md
+  --with-key-terms
 ```
 
-若只想單次覆蓋 provider 或 model，CLI 參數仍然優先：
+`PowerShell`：
+
+```powershell
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
+  --course-name "FastAPI 入門" `
+  --subtitle-lang zh-TW `
+  --sample-interval 1 `
+  --min-segment-seconds 20 `
+  --note-style summary `
+  --include-transcript `
+  --with-course-summary `
+  --with-key-terms
+```
+
+若只想單次覆蓋 provider 或 model，CLI 參數仍然優先。
+
+`bash`：
 
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --course-name "FastAPI 入門" \
   --llm-backend vllm \
-  --model Qwen/Qwen2.5-7B-Instruct \
-  --output output.md
+  --model Qwen/Qwen2.5-7B-Instruct
 ```
 
-```shell
-course-note generate "https://www.youtube.com/watch?v=urwDLyNa9FU"   --course-name "AI Agent (1/3)：核心技術 Context Engineering 基本概念解說"   --subtitle-lang zh-TW   --sample-interval 1   --scene-threshold 27   --scene-edge-weight 0.2   --min-segment-seconds 20   --llm-backend ollama   --model gemma4:e4b   --note-style near_transcript   --include-transcript   --with-course-summary   --with-key-terms   --output output3.md
+`PowerShell`：
+
+```powershell
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
+  --course-name "FastAPI 入門" `
+  --llm-backend vllm `
+  --model Qwen/Qwen2.5-7B-Instruct
 ```
+
+### `rewrite-notes`
+
+`bash`：
+
+```bash
+course-note rewrite-notes \
+  --workdir workdir \
+  --course-name "Python 資料分析" \
+  --llm-backend ollama \
+  --model gemma4:e4b \
+  --note-style near_transcript \
+  --with-course-summary \
+  --with-key-terms
+```
+
+`PowerShell`：
+
+```powershell
+course-note rewrite-notes `
+  --workdir workdir `
+  --course-name "Python 資料分析" `
+  --llm-backend ollama `
+  --model gemma4:e4b `
+  --note-style near_transcript `
+  --with-course-summary `
+  --with-key-terms
+```
+
+### `publish-hackmd`
 
 若要把已產生的 Markdown 筆記發布到 HackMD，並自動把 `簡報：000243.jpg` 這類段落對應的本機圖片上傳後插入到該段落下方，可使用：
 
+`bash`：
 ```bash
-course-note publish-hackmd output.md --course-name "Python 資料分析"
+course-note publish-hackmd --course-name "Python 資料分析"
 ```
 
-??????????? HackMD ???????????????????
+`PowerShell`：
+```powershell
+course-note publish-hackmd --course-name "Python 資料分析"
+```
+
+如果你已經在瀏覽器登入 HackMD，這個指令仍然需要 `.env` 或環境變數中的 `HACKMD_API` token 才能成功發布。
 
 預設會從 `workdir/<course-name>/frames` 尋找圖片。若圖片在別的位置，可改用：
 
+`bash`：
 ```bash
-course-note publish-hackmd output.md --course-name "Python 資料分析" --image-dir path/to/frames
+course-note publish-hackmd --course-name "Python 資料分析" --image-dir path/to/frames
+```
+
+`PowerShell`：
+```powershell
+course-note publish-hackmd --course-name "Python 資料分析" --image-dir path/to/frames
 ```
 
 請先在 `.env` 或環境變數中設定：
 
-```bash
+```env
 HACKMD_API=your_hackmd_token
-```
-
-```shell
-course-note rewrite-notes   --workdir workdir   --course-name "Python 資料分析"   --source-note output.md   --llm-backend ollama   --model gemma4:e4b   --note-style near_transcript   --with-course-summary   --with-key-terms   --output output.md
-
-
 ```
 
 ## 切段調參指南
@@ -136,8 +209,8 @@ course-note rewrite-notes   --workdir workdir   --course-name "Python 資料分�
 
 ### `--min-segment-seconds` 是什麼
 
-`--min-segment-seconds 20` 的意思是「場景切分後，每一段最短至少要接近 20 秒」。  
-它會被轉成 PySceneDetect 的 `min_scene_len`，如果兩個切點距離太近、短於這個值，系統就會傾向把它們合併，而不是切成兩個獨立片段。
+`--min-segment-seconds 20` 的意思是「場景切分後，每一段最短至少要接近 20 秒」。
+它會被轉成 PySceneDetect 的 `min_scene_len`。如果兩個切點距離太近、短於這個值，系統就會傾向把它們合併，而不是切成兩個獨立片段。
 
 所以這個參數控制的是：
 
@@ -189,8 +262,21 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --llm-backend ollama \
   --model qwen3:8b \
   --note-style near_transcript \
-  --with-key-terms \
-  --output output.md
+  --with-key-terms
+```
+
+```powershell
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
+  --course-name "FastAPI 入門" `
+  --subtitle-lang zh-TW `
+  --sample-interval 1 `
+  --scene-threshold 27 `
+  --scene-edge-weight 0.2 `
+  --min-segment-seconds 20 `
+  --llm-backend ollama `
+  --model qwen3:8b `
+  --note-style near_transcript `
+  --with-key-terms
 ```
 
 如果問題是「中間還是有片段切段失敗，而且看起來偏向切太碎、誤切太多」，建議先試這一版：
@@ -206,18 +292,31 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --llm-backend ollama \
   --model qwen3:8b \
   --note-style near_transcript \
-  --with-key-terms \
-  --output output.md
+  --with-key-terms
+```
+
+```powershell
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
+  --course-name "FastAPI 入門" `
+  --subtitle-lang zh-TW `
+  --sample-interval 1 `
+  --scene-threshold 30 `
+  --scene-edge-weight 0.0 `
+  --min-segment-seconds 30 `
+  --llm-backend ollama `
+  --model qwen3:8b `
+  --note-style near_transcript `
+  --with-key-terms
 ```
 
 這樣改的原因是：
 
 - `--min-segment-seconds 20 -> 30`
-  先減少太短的誤切片段
+  先減少太短的誤切片段。
 - `--scene-threshold 27 -> 30`
-  讓系統不要對小幅度畫面變化太敏感
+  讓系統不要對小幅度畫面變化太敏感。
 - `--scene-edge-weight 0.2 -> 0.0`
-  避免因為框線、表格、版型邊緣變動而被誤判成新場景
+  避免因為框線、表格、版型邊緣變動而被誤判成新場景。
 
 ### 哪些參數不影響切段
 
@@ -239,12 +338,15 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
 
 ## Workdir 結構
 
-`generate` 現在會把 `--workdir` 當成「課程工作區根目錄」，每個 `--course-name` 會對應到一個固定子資料夾。相同 `course name` 會共用同一份 `video.mp4` 與 `subtitles.vtt` 快取，但 `frames/`、`scenes.json`、`segments.json`、`llm_outputs.json` 會在每次執行時重建。同一個 `course name` 若改拿去跑不同 URL，程式會直接報錯，避免誤用舊快取。
+`generate` 會把 `--workdir` 當成課程工作區根目錄，每個 `--course-name` 會對應到一個固定子資料夾。相同 course name 會共用同一份 `video.mp4` 與 `subtitles.vtt` 快取，但 `frames/`、`scenes.json`、`segments.json`、`llm_outputs.json` 會在每次執行時重建。
+
+同一個 `course-name` 如果拿去跑不同 URL，程式會直接報錯，避免誤用舊快取。
 
 ```text
 workdir/
   Python 資料分析/
     course_metadata.json
+    article.md
     video.mp4
     subtitles.vtt
     transcript.json

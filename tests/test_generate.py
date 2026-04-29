@@ -121,17 +121,15 @@ def test_generate_impl_reuses_cached_video_and_subtitle(monkeypatch: pytest.Monk
     monkeypatch.setattr(cli_main, "LLMService", lambda: _FakeLLMService())
     monkeypatch.setattr(cli_main, "MarkdownRenderer", lambda: _FakeMarkdownRenderer())
 
-    output_path = tmp_path / "output.md"
     cli_main.generate_impl(
         url="https://example.com/watch?v=demo",
         course_name="Demo Course",
         workdir=base_workdir,
-        output=output_path,
     )
 
     metadata = load_course_workspace_metadata(course_workdir)
 
-    assert output_path.read_text(encoding="utf-8").startswith("# Stored Title")
+    assert (course_workdir / "article.md").read_text(encoding="utf-8").startswith("# Stored Title")
     assert detect_calls == [(course_workdir / "video.mp4", course_workdir / "scene_stats.csv")]
     assert frame_calls == [
         (

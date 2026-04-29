@@ -32,6 +32,8 @@ else:
     typer = None
 
 
+ARTICLE_FILENAME = "article.md"
+
 GENERATE_HELP = {
     "url": "Course video URL.",
     "course_name": "Required course identifier. The same course name reuses the same per-course workspace under --workdir.",
@@ -48,14 +50,13 @@ GENERATE_HELP = {
     "with_key_terms": "Extract key terms for the whole course.",
     "include_extra_notes": "Allow the LLM to emit an extra notes section when needed.",
     "include_transcript": "Include the original transcript text in each segment of the rendered Markdown.",
-    "output": "Output Markdown file path.",
     "workdir": "Base working directory that stores per-course subfolders and intermediate artifacts.",
 }
 
 REWRITE_HELP = {
     "workdir": "Base working directory, or a direct path to a course workspace containing segments.json and llm_outputs.json.",
-    "course_name": "Optional course identifier used to resolve the per-course workspace under --workdir.",
-    "source_note": "Existing Markdown note used to recover title and URL when title/url are not passed explicitly.",
+    "course_name": "Required course identifier used to resolve the per-course workspace under --workdir.",
+    "source_note": "Existing Markdown note used to recover title and URL when title/url are not passed explicitly. Defaults to the course article.md.",
     "title": "Override note title in the regenerated Markdown.",
     "url": "Override source video URL in the regenerated Markdown.",
     "llm_backend": GENERATE_HELP["llm_backend"],
@@ -66,11 +67,9 @@ REWRITE_HELP = {
     "with_key_terms": GENERATE_HELP["with_key_terms"],
     "include_extra_notes": GENERATE_HELP["include_extra_notes"],
     "include_transcript": GENERATE_HELP["include_transcript"],
-    "output": GENERATE_HELP["output"],
 }
 
 PUBLISH_HELP = {
-    "note_path": "Markdown file to publish.",
     "course_name": "Required course identifier used to resolve the per-course frames directory under --workdir.",
     "title": "HackMD note title. Defaults to the first Markdown heading.",
     "workdir": "Base working directory that stores per-course subfolders.",
@@ -94,7 +93,6 @@ def generate_impl(
     with_key_terms: bool = False,
     include_extra_notes: bool = False,
     include_transcript: bool = False,
-    output: Path = Path("output.md"),
     workdir: Path = Path("workdir"),
 ) -> None:
     workdir = resolve_course_workdir(workdir, course_name)
@@ -173,7 +171,7 @@ def generate_impl(
         ),
     )
 
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output = _course_article_path(workdir)
     output.write_text(MarkdownRenderer().render(note, include_transcript=include_transcript), encoding="utf-8")
     message = f"Markdown note generated at {output}"
     if HAS_TYPER:
@@ -185,7 +183,7 @@ def generate_impl(
 def rewrite_notes_impl(
     workdir: Path = Path("workdir"),
     course_name: str | None = None,
-    source_note: Path | None = Path("output.md"),
+    source_note: Path | None = None,
     title: str | None = None,
     url: str | None = None,
     llm_backend: str | None = None,
@@ -196,10 +194,11 @@ def rewrite_notes_impl(
     with_key_terms: bool = False,
     include_extra_notes: bool = False,
     include_transcript: bool = False,
-    output: Path = Path("output.md"),
 ) -> None:
     if course_name:
         workdir = resolve_course_workdir(workdir, course_name)
+    output = _course_article_path(workdir)
+    source_note = output if source_note is None else source_note
     segments = _load_segments(workdir / "segments.json")
     resolved_title, resolved_url = _resolve_note_metadata(source_note, title=title, url=url)
 
@@ -246,14 +245,15 @@ def rewrite_notes_impl(
 
 
 def publish_hackmd_impl(
-    note_path: Path,
     course_name: str,
     title: str | None = None,
     workdir: Path = Path("workdir"),
     image_dir: Path | None = None,
 ) -> None:
     load_env_file()
-    resolved_image_dir = image_dir or (resolve_course_workdir(workdir, course_name) / "frames")
+    course_workdir = resolve_course_workdir(workdir, course_name)
+    note_path = _course_article_path(course_workdir)
+    resolved_image_dir = image_dir or (course_workdir / "frames")
     result = HackMDPublisher().publish_markdown(note_path, title=title, image_dir=resolved_image_dir)
     link = result.publish_link or result.permalink or f"note_id={result.note_id}"
     message = f"HackMD note created: {link} (uploaded {result.image_count} image(s))"
@@ -261,6 +261,11 @@ def publish_hackmd_impl(
         typer.echo(message)
     else:
         print(message)
+
+
+def _course_article_path(course_workdir: Path) -> Path:
+    course_workdir.mkdir(parents=True, exist_ok=True)
+    return course_workdir / ARTICLE_FILENAME
 
 
 def _load_or_download_subtitles(
@@ -403,7 +408,6 @@ if HAS_TYPER:
         with_key_terms: bool = typer.Option(False, help=GENERATE_HELP["with_key_terms"]),
         include_extra_notes: bool = typer.Option(False, help=GENERATE_HELP["include_extra_notes"]),
         include_transcript: bool = typer.Option(False, help=GENERATE_HELP["include_transcript"]),
-        output: Path = typer.Option(Path("output.md"), help=GENERATE_HELP["output"]),
         workdir: Path = typer.Option(Path("workdir"), help=GENERATE_HELP["workdir"]),
     ) -> None:
         generate_impl(
@@ -422,15 +426,14 @@ if HAS_TYPER:
             with_key_terms=with_key_terms,
             include_extra_notes=include_extra_notes,
             include_transcript=include_transcript,
-            output=output,
             workdir=workdir,
         )
 
     @app.command("rewrite-notes")
     def rewrite_notes(
         workdir: Path = typer.Option(Path("workdir"), help=REWRITE_HELP["workdir"]),
-        course_name: str | None = typer.Option(None, help=REWRITE_HELP["course_name"]),
-        source_note: Path | None = typer.Option(Path("output.md"), help=REWRITE_HELP["source_note"]),
+        course_name: str = typer.Option(..., help=REWRITE_HELP["course_name"]),
+        source_note: Path | None = typer.Option(None, help=REWRITE_HELP["source_note"]),
         title: str | None = typer.Option(None, help=REWRITE_HELP["title"]),
         url: str | None = typer.Option(None, help=REWRITE_HELP["url"]),
         llm_backend: str | None = typer.Option(None, help=REWRITE_HELP["llm_backend"]),
@@ -441,7 +444,6 @@ if HAS_TYPER:
         with_key_terms: bool = typer.Option(False, help=REWRITE_HELP["with_key_terms"]),
         include_extra_notes: bool = typer.Option(False, help=REWRITE_HELP["include_extra_notes"]),
         include_transcript: bool = typer.Option(False, help=REWRITE_HELP["include_transcript"]),
-        output: Path = typer.Option(Path("output.md"), help=REWRITE_HELP["output"]),
     ) -> None:
         rewrite_notes_impl(
             workdir=workdir,
@@ -457,18 +459,16 @@ if HAS_TYPER:
             with_key_terms=with_key_terms,
             include_extra_notes=include_extra_notes,
             include_transcript=include_transcript,
-            output=output,
         )
 
     @app.command("publish-hackmd")
     def publish_hackmd(
-        note_path: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, help=PUBLISH_HELP["note_path"]),
         course_name: str = typer.Option(..., help=PUBLISH_HELP["course_name"]),
         title: str | None = typer.Option(None, help=PUBLISH_HELP["title"]),
         workdir: Path = typer.Option(Path("workdir"), help=PUBLISH_HELP["workdir"]),
         image_dir: Path | None = typer.Option(None, help=PUBLISH_HELP["image_dir"]),
     ) -> None:
-        publish_hackmd_impl(note_path=note_path, course_name=course_name, title=title, workdir=workdir, image_dir=image_dir)
+        publish_hackmd_impl(course_name=course_name, title=title, workdir=workdir, image_dir=image_dir)
 else:
     import argparse
 
@@ -493,12 +493,11 @@ else:
         generate_parser.add_argument("--with-key-terms", action="store_true", help=GENERATE_HELP["with_key_terms"])
         generate_parser.add_argument("--include-extra-notes", action="store_true", help=GENERATE_HELP["include_extra_notes"])
         generate_parser.add_argument("--include-transcript", action="store_true", help=GENERATE_HELP["include_transcript"])
-        generate_parser.add_argument("--output", type=Path, default=Path("output.md"), help=GENERATE_HELP["output"])
         generate_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
         rewrite_parser = subparsers.add_parser("rewrite-notes", help="Reuse existing segments and only regenerate note content.")
         rewrite_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=REWRITE_HELP["workdir"])
-        rewrite_parser.add_argument("--course-name", help=REWRITE_HELP["course_name"])
-        rewrite_parser.add_argument("--source-note", type=Path, default=Path("output.md"), help=REWRITE_HELP["source_note"])
+        rewrite_parser.add_argument("--course-name", required=True, help=REWRITE_HELP["course_name"])
+        rewrite_parser.add_argument("--source-note", type=Path, help=REWRITE_HELP["source_note"])
         rewrite_parser.add_argument("--title", help=REWRITE_HELP["title"])
         rewrite_parser.add_argument("--url", help=REWRITE_HELP["url"])
         rewrite_parser.add_argument("--llm-backend", help=REWRITE_HELP["llm_backend"])
@@ -509,9 +508,7 @@ else:
         rewrite_parser.add_argument("--with-key-terms", action="store_true", help=REWRITE_HELP["with_key_terms"])
         rewrite_parser.add_argument("--include-extra-notes", action="store_true", help=REWRITE_HELP["include_extra_notes"])
         rewrite_parser.add_argument("--include-transcript", action="store_true", help=REWRITE_HELP["include_transcript"])
-        rewrite_parser.add_argument("--output", type=Path, default=Path("output.md"), help=REWRITE_HELP["output"])
         publish_parser = subparsers.add_parser("publish-hackmd", help="Publish a rendered Markdown note to HackMD.")
-        publish_parser.add_argument("note_path", type=Path, help=PUBLISH_HELP["note_path"])
         publish_parser.add_argument("--course-name", required=True, help=PUBLISH_HELP["course_name"])
         publish_parser.add_argument("--title", help=PUBLISH_HELP["title"])
         publish_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=PUBLISH_HELP["workdir"])
@@ -538,7 +535,6 @@ else:
                 with_key_terms=args.with_key_terms,
                 include_extra_notes=args.include_extra_notes,
                 include_transcript=args.include_transcript,
-                output=args.output,
                 workdir=args.workdir,
             )
         if args.command == "rewrite-notes":
@@ -556,11 +552,9 @@ else:
                 with_key_terms=args.with_key_terms,
                 include_extra_notes=args.include_extra_notes,
                 include_transcript=args.include_transcript,
-                output=args.output,
             )
         if args.command == "publish-hackmd":
             publish_hackmd_impl(
-                note_path=args.note_path,
                 course_name=args.course_name,
                 title=args.title,
                 workdir=args.workdir,

@@ -61,16 +61,23 @@ The `generate` command in `cli/main.py` executes these steps in order:
 8. **Optional: course summary & key terms** (`llm/service.py`) — enabled via CLI flags
 9. **Render Markdown** (`renderers/markdown.py`) — outputs structured `.md` file
 
+Generated and rewritten notes are always stored at `workdir/<course-name>/article.md`.
+The CLI no longer accepts `--output`, and HackMD publishing uses `--course-name`
+instead of a positional Markdown filename.
+
 **Intermediate files** are preserved in `workdir/`:
 ```
 workdir/
-  video.mp4
-  subtitles.vtt
-  transcript.json
-  frames/
-  scenes.json
-  segments.json
-  llm_outputs.json
+  FastAPI 入門/
+    course_metadata.json
+    article.md
+    video.mp4
+    subtitles.vtt
+    transcript.json
+    frames/
+    scenes.json
+    segments.json
+    llm_outputs.json
 ```
 
 ---
@@ -118,6 +125,7 @@ Available `--note-style` values:
 
 ```bash
 course-note generate "https://youtube.com/..." \
+  --course-name "FastAPI 入門" \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
   --scene-threshold 27.0 \
@@ -127,8 +135,58 @@ course-note generate "https://youtube.com/..." \
   --note-style summary \
   --with-course-summary \
   --with-key-terms \
-  --output output.md \
   --workdir ./workdir
+```
+
+PowerShell:
+
+```powershell
+course-note generate "https://youtube.com/..." `
+  --course-name "FastAPI 入門" `
+  --subtitle-lang zh-TW `
+  --sample-interval 1 `
+  --scene-threshold 27.0 `
+  --min-segment-seconds 20 `
+  --llm-backend ollama `
+  --model qwen2.5:7b `
+  --note-style summary `
+  --with-course-summary `
+  --with-key-terms `
+  --workdir ./workdir
+```
+
+Content-only rewrite:
+
+```bash
+course-note rewrite-notes \
+  --workdir ./workdir \
+  --course-name "FastAPI 入門" \
+  --llm-backend ollama \
+  --model qwen2.5:7b \
+  --note-style summary
+```
+
+PowerShell:
+
+```powershell
+course-note rewrite-notes `
+  --workdir ./workdir `
+  --course-name "FastAPI 入門" `
+  --llm-backend ollama `
+  --model qwen2.5:7b `
+  --note-style summary
+```
+
+HackMD publish:
+
+```bash
+course-note publish-hackmd --course-name "FastAPI 入門"
+```
+
+PowerShell:
+
+```powershell
+course-note publish-hackmd --course-name "FastAPI 入門"
 ```
 
 The CLI supports both `typer` (when installed) and a graceful fallback to `argparse`.

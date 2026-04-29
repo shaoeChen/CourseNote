@@ -27,11 +27,11 @@ def test_publish_hackmd_impl_uses_course_workspace_frames(monkeypatch, tmp_path:
     monkeypatch.setattr(cli_main, "load_env_file", lambda: None)
     monkeypatch.setattr(cli_main, "HackMDPublisher", lambda: _FakeHackMDPublisher())
 
-    note_path = tmp_path / "output.md"
+    note_path = tmp_path / "workdir" / "Demo Course" / "article.md"
+    note_path.parent.mkdir(parents=True)
     note_path.write_text("# Demo\n", encoding="utf-8")
 
     cli_main.publish_hackmd_impl(
-        note_path=note_path,
         course_name="Demo Course",
         workdir=tmp_path / "workdir",
     )
@@ -60,12 +60,12 @@ def test_publish_hackmd_impl_allows_image_dir_override(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(cli_main, "load_env_file", lambda: None)
     monkeypatch.setattr(cli_main, "HackMDPublisher", lambda: _FakeHackMDPublisher())
 
-    note_path = tmp_path / "output.md"
+    note_path = tmp_path / "workdir" / "Demo Course" / "article.md"
+    note_path.parent.mkdir(parents=True)
     note_path.write_text("# Demo\n", encoding="utf-8")
     override_dir = tmp_path / "custom-frames"
 
     cli_main.publish_hackmd_impl(
-        note_path=note_path,
         course_name="Demo Course",
         workdir=tmp_path / "workdir",
         image_dir=override_dir,

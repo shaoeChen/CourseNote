@@ -39,8 +39,6 @@ def test_generate_subcommand_accepts_url(monkeypatch: pytest.MonkeyPatch) -> Non
             "demo-course",
             "--scene-edge-weight",
             "0.2",
-            "--output",
-            "notes.md",
         ],
     )
 
@@ -48,7 +46,7 @@ def test_generate_subcommand_accepts_url(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["url"] == "https://example.com/watch?v=demo"
     assert captured["course_name"] == "demo-course"
     assert captured["scene_edge_weight"] == 0.2
-    assert captured["output"] == Path("notes.md")
+    assert "output" not in captured
 
 
 def test_generate_subcommand_accepts_llm_timeout_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,11 +113,9 @@ def test_generate_subcommand_requires_course_name() -> None:
     assert "--course-name" in result.output
 
 
-def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_publish_hackmd_subcommand_accepts_course_name(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = CliRunner()
     captured: dict[str, object] = {}
-    note_path = Path("output.md")
-    note_path.write_text("# demo\n", encoding="utf-8")
 
     def fake_publish_hackmd_impl(**kwargs: object) -> None:
         captured.update(kwargs)
@@ -130,7 +126,6 @@ def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyP
         cli_main.app,
         [
             "publish-hackmd",
-            "output.md",
             "--course-name",
             "demo-course",
             "--title",
@@ -141,32 +136,26 @@ def test_publish_hackmd_subcommand_accepts_note_path(monkeypatch: pytest.MonkeyP
     )
 
     assert result.exit_code == 0
-    assert captured["note_path"] == Path("output.md")
     assert captured["course_name"] == "demo-course"
     assert captured["title"] == "HackMD Demo"
     assert captured["image_dir"] == Path("frames")
-    note_path.unlink()
 
 
 def test_publish_hackmd_subcommand_requires_course_name() -> None:
     runner = CliRunner()
-    note_path = Path("output.md")
-    note_path.write_text("# demo\n", encoding="utf-8")
 
     result = runner.invoke(
         cli_main.app,
         [
             "publish-hackmd",
-            "output.md",
         ],
     )
 
     assert result.exit_code != 0
     assert "--course-name" in result.output
-    note_path.unlink()
 
 
-def test_rewrite_notes_subcommand_accepts_workdir_and_source_note(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rewrite_notes_subcommand_accepts_workdir_and_course_name(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = CliRunner()
     captured: dict[str, object] = {}
 
@@ -181,17 +170,15 @@ def test_rewrite_notes_subcommand_accepts_workdir_and_source_note(monkeypatch: p
             "rewrite-notes",
             "--workdir",
             "saved-workdir",
-            "--source-note",
-            "old-output.md",
+            "--course-name",
+            "demo-course",
             "--title",
             "Updated title",
-            "--output",
-            "new-output.md",
         ],
     )
 
     assert result.exit_code == 0
     assert captured["workdir"] == Path("saved-workdir")
-    assert captured["source_note"] == Path("old-output.md")
+    assert captured["course_name"] == "demo-course"
     assert captured["title"] == "Updated title"
-    assert captured["output"] == Path("new-output.md")
+    assert "output" not in captured

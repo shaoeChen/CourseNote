@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -42,6 +42,12 @@ class DummyHackMDClient:
     def upload_image(self, note_id: str, image_path: Path) -> str:
         self.uploaded.append((note_id, image_path))
         return f"https://hackmd.io/_uploads/{image_path.name}"
+
+
+class FailingUpdateHackMDClient(DummyHackMDClient):
+    def update_note(self, note: HackMDNote, *, content: str) -> None:
+        super().update_note(note, content=content)
+        raise HackMDRequestError("temporary update failure", status_code=500, retryable=True)
 
 
 class DummyResponse:
@@ -118,6 +124,58 @@ def test_publish_markdown_without_images_creates_single_note(tmp_path: Path) -> 
     assert client.created[0]["title"] == "Demo Title"
     assert client.uploaded == []
     assert result.image_count == 0
+
+
+def test_publish_markdown_waits_before_final_update_when_images_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    note_path = tmp_path / "output.md"
+    note_path.write_text(
+        "# Demo Title\n\n##\n簡報：000243.jpg\n時間：00:02:43 ~ 00:04:51\n重點：內容\n",
+        encoding="utf-8",
+    )
+    image_dir = tmp_path / "workdir" / "frames"
+    image_dir.mkdir(parents=True)
+    (image_dir / "000243.jpg").write_bytes(b"fake-image")
+
+    client = DummyHackMDClient()
+    sleeps: list[float] = []
+    publisher = HackMDPublisher(client=client, post_upload_settle_seconds=7.5)
+    monkeypatch.setattr(publisher, "_sleep_before_finalize", lambda delay: sleeps.append(delay))
+
+    publisher.publish_markdown(note_path, image_dir=image_dir)
+
+    assert sleeps == [7.5]
+
+
+def test_publish_markdown_creates_final_note_when_update_after_upload_fails(tmp_path: Path) -> None:
+    note_path = tmp_path / "output.md"
+    note_path.write_text(
+        "# Demo Title\n\n##\n簡報：000243.jpg\n時間：00:02:43 ~ 00:04:51\n重點：內容\n",
+        encoding="utf-8",
+    )
+    image_dir = tmp_path / "workdir" / "frames"
+    image_dir.mkdir(parents=True)
+    image_path = image_dir / "000243.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    client = FailingUpdateHackMDClient()
+    result = HackMDPublisher(client=client, post_upload_settle_seconds=0).publish_markdown(note_path, image_dir=image_dir)
+
+    assert len(client.created) == 2
+    assert client.uploaded == [("asset-note-123", image_path.resolve())]
+    assert client.updated == [
+        {
+            "note_id": "asset-note-123",
+            "short_id": "asset-short-123",
+            "content": "# Demo Title\n\n##\n簡報：000243.jpg\n![000243.jpg](https://hackmd.io/_uploads/000243.jpg)\n時間：00:02:43 ~ 00:04:51\n重點：內容\n",
+        }
+    ]
+    assert client.created[1]["content"] == client.updated[0]["content"]
+    assert result.note_id == "note-123"
+    assert result.publish_link == "https://hackmd.io/@demo/note-123"
+    assert result.image_count == 1
 
 
 def test_update_note_retries_transient_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,3 +319,34 @@ def test_request_json_waits_for_rate_limit_reset(monkeypatch: pytest.MonkeyPatch
     assert client._rate_limit_limit == 100
     assert client._rate_limit_remaining == 99
     assert client._rate_limit_reset_at == 260.0
+
+
+def test_request_json_normalizes_millisecond_rate_limit_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = HackMDClient(api_base="https://api.hackmd.test/v1", api_token="token")
+
+    def fake_urlopen(request, timeout: int) -> DummyResponse:
+        return DummyResponse(
+            200,
+            '{"ok": true}',
+            headers={
+                "X-RateLimit-UserReset": "1714300000123",
+            },
+        )
+
+    monkeypatch.setattr(hackmd_publisher.urllib.request, "urlopen", fake_urlopen)
+
+    body = client._request_json("GET", "/notes", expected_statuses=(200,))
+
+    assert body == {"ok": True}
+    assert client._rate_limit_reset_at == 1714300000.123
+
+
+def test_sleep_before_retry_clamps_large_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = HackMDClient(api_base="https://api.hackmd.test/v1", api_token="token")
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(hackmd_publisher.time, "sleep", lambda delay: sleeps.append(delay))
+
+    client._sleep_before_retry(10_000_000_000.0)
+
+    assert sleeps == [3600.0]

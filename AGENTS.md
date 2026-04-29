@@ -64,16 +64,19 @@ The `generate` command in `course_note/cli/main.py` performs the full pipeline:
 8. Optionally generate course summary and key terms
 9. Render Markdown with `renderers/markdown.py`
 
+The rendered note is always written to the per-course workspace as
+`workdir/<course-name>/article.md`. The CLI no longer accepts `--output`.
+
 Important detail: representative slide frames are aligned to the **end** of each segment, not the start. `sample_interval` means "how many seconds before segment end to capture the frame".
 
 ### `rewrite-notes`
 
 The `rewrite-notes` command skips subtitle/video/scene work and only rewrites note content:
 
-1. Load existing `workdir/segments.json`
+1. Load existing `workdir/<course-name>/segments.json`
 2. Keep the existing segment boundaries and screenshot names
 3. Re-run the LLM only on each segment's `transcript`
-4. Rebuild the Markdown output
+4. Rebuild `workdir/<course-name>/article.md`
 
 Use this when timings and screenshots already look correct and only note wording or note style needs to change.
 
@@ -97,6 +100,7 @@ All main models live in `course_note/models/core.py` and use `@dataclass(slots=T
 
 ```bash
 course-note generate "https://youtube.com/..." \
+  --course-name "FastAPI 入門" \
   --subtitle-lang zh-TW \
   --sample-interval 1 \
   --scene-threshold 27.0 \
@@ -106,7 +110,23 @@ course-note generate "https://youtube.com/..." \
   --note-style summary \
   --with-course-summary \
   --with-key-terms \
-  --output output.md \
+  --workdir ./workdir
+```
+
+PowerShell:
+
+```powershell
+course-note generate "https://youtube.com/..." `
+  --course-name "FastAPI 入門" `
+  --subtitle-lang zh-TW `
+  --sample-interval 1 `
+  --scene-threshold 27.0 `
+  --min-segment-seconds 20 `
+  --llm-backend ollama `
+  --model qwen2.5:7b `
+  --note-style summary `
+  --with-course-summary `
+  --with-key-terms `
   --workdir ./workdir
 ```
 
@@ -115,19 +135,35 @@ course-note generate "https://youtube.com/..." \
 ```bash
 course-note rewrite-notes \
   --workdir ./workdir \
-  --source-note output.md \
+  --course-name "FastAPI 入門" \
   --llm-backend ollama \
   --model qwen2.5:7b \
-  --note-style summary \
-  --output output.md
+  --note-style summary
 ```
 
-If no prior Markdown file is available, pass `--title` and `--url` explicitly.
+PowerShell:
+
+```powershell
+course-note rewrite-notes `
+  --workdir ./workdir `
+  --course-name "FastAPI 入門" `
+  --llm-backend ollama `
+  --model qwen2.5:7b `
+  --note-style summary
+```
+
+By default, `rewrite-notes` reads metadata from the course `article.md` when `--title` or `--url` are not passed. If no prior Markdown file is available, pass `--title` and `--url` explicitly.
 
 ### HackMD publish
 
 ```bash
-course-note publish-hackmd output.md
+course-note publish-hackmd --course-name "FastAPI 入門"
+```
+
+PowerShell:
+
+```powershell
+course-note publish-hackmd --course-name "FastAPI 入門"
 ```
 
 ---
@@ -138,16 +174,19 @@ course-note publish-hackmd output.md
 
 ```text
 workdir/
-  video.mp4
-  subtitles.vtt
-  transcript.json
-  frames/
-  scenes.json
-  segments.json
-  llm_outputs.json
+  FastAPI 入門/
+    course_metadata.json
+    article.md
+    video.mp4
+    subtitles.vtt
+    transcript.json
+    frames/
+    scenes.json
+    segments.json
+    llm_outputs.json
 ```
 
-`rewrite-notes` depends on `segments.json` and rewrites `llm_outputs.json`.
+`rewrite-notes` depends on `segments.json`, rewrites `llm_outputs.json`, and overwrites `article.md`.
 
 ---
 

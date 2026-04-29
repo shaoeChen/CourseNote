@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import mimetypes
@@ -20,11 +20,14 @@ DEFAULT_HACKMD_API_BASE = "https://api.hackmd.io/v1"
 SCREENSHOT_LINE_RE = re.compile(r"^(?P<prefix>\s*簡報[：:]\s*)(?P<image>.+?)\s*$")
 MARKDOWN_TITLE_RE = re.compile(r"^#\s+(?P<title>.+?)\s*$")
 TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
-DEFAULT_UPDATE_RETRY_ATTEMPTS = 4
-DEFAULT_UPDATE_RETRY_DELAY_SECONDS = 1.0
+DEFAULT_UPDATE_RETRY_ATTEMPTS = 6
+DEFAULT_UPDATE_RETRY_DELAY_SECONDS = 2.0
 DEFAULT_UPLOAD_RETRY_ATTEMPTS = 8
 DEFAULT_UPLOAD_RETRY_DELAY_SECONDS = 5.0
 DEFAULT_UPLOAD_SPACING_SECONDS = 1.0
+DEFAULT_POST_UPLOAD_SETTLE_SECONDS = 10.0
+UNIX_TIMESTAMP_MILLISECONDS_THRESHOLD = 100_000_000_000
+MAX_RETRY_SLEEP_SECONDS = 3600.0
 
 
 @dataclass(slots=True)
@@ -290,7 +293,8 @@ class HackMDClient:
         self._rate_limit_reset_at = None
 
     def _sleep_before_retry(self, delay_seconds: float) -> None:
-        time.sleep(delay_seconds)
+        bounded_delay = min(max(delay_seconds, 0.0), MAX_RETRY_SLEEP_SECONDS)
+        time.sleep(bounded_delay)
 
     def _update_rate_limit_state(self, headers: Any) -> None:
         limit = self._extract_int_header(self._header_value(headers, "X-RateLimit-UserLimit"))
@@ -328,6 +332,8 @@ class HackMDClient:
             reset_at = float(value.strip())
         except ValueError:
             return None
+        if reset_at >= UNIX_TIMESTAMP_MILLISECONDS_THRESHOLD:
+            reset_at /= 1000.0
         return reset_at if reset_at >= 0 else None
 
     def _extract_retry_after_seconds(self, value: str | None) -> float | None:
@@ -376,8 +382,14 @@ class HackMDClient:
 
 
 class HackMDPublisher:
-    def __init__(self, client: HackMDClient | None = None) -> None:
+    def __init__(
+        self,
+        client: HackMDClient | None = None,
+        *,
+        post_upload_settle_seconds: float = DEFAULT_POST_UPLOAD_SETTLE_SECONDS,
+    ) -> None:
         self.client = client or HackMDClient()
+        self.post_upload_settle_seconds = max(post_upload_settle_seconds, 0.0)
 
     def publish_markdown(
         self,
@@ -407,7 +419,14 @@ class HackMDPublisher:
             note_id=created_note.note_id,
             image_dir=image_dir,
         )
-        self.client.update_note(created_note, content=enriched_content)
+        if image_count > 0 and self.post_upload_settle_seconds > 0:
+            self._sleep_before_finalize(self.post_upload_settle_seconds)
+        try:
+            self.client.update_note(created_note, content=enriched_content)
+        except HackMDRequestError as exc:
+            if not exc.retryable:
+                raise
+            created_note = self.client.create_note(note_title, enriched_content)
         return HackMDPublishResult(
             note_id=created_note.note_id,
             title=note_title,
@@ -415,6 +434,9 @@ class HackMDPublisher:
             permalink=created_note.permalink,
             image_count=image_count,
         )
+
+    def _sleep_before_finalize(self, delay_seconds: float) -> None:
+        time.sleep(delay_seconds)
 
     def _inject_uploaded_images(
         self,
