@@ -253,6 +253,8 @@ HACKMD_API=your_hackmd_token
 
 你目前使用的是：
 
+`bash`：
+
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --course-name "FastAPI 入門" \
@@ -267,6 +269,8 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --note-style near_transcript \
   --with-key-terms
 ```
+
+`PowerShell`：
 
 ```powershell
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
@@ -285,6 +289,8 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
 
 如果問題是「中間還是有片段切段失敗，而且看起來偏向切太碎、誤切太多」，建議先試這一版：
 
+`bash`：
+
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --course-name "FastAPI 入門" \
@@ -299,6 +305,8 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --note-style near_transcript \
   --with-key-terms
 ```
+
+`PowerShell`：
 
 ```powershell
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
