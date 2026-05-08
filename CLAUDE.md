@@ -64,6 +64,7 @@ The `generate` command in `cli/main.py` executes these steps in order:
 Generated and rewritten notes are always stored at `workdir/<course-name>/article.md`.
 The CLI no longer accepts `--output`, and HackMD publishing uses `--course-name`
 instead of a positional Markdown filename.
+LLM model selection is resolved from `.env` via `COURSE_NOTE_MODEL` or provider-specific `COURSE_NOTE_<PROVIDER>_MODEL`; the CLI no longer accepts `--model`.
 
 **Intermediate files** are preserved in `workdir/`:
 ```
@@ -106,10 +107,13 @@ All backends use the OpenAI chat completions API format:
 | `vllm` | `http://localhost:8000/v1` |
 | `llama.cpp` | `http://localhost:8080/v1` |
 | `zai` | `https://open.bigmodel.cn/api/paas/v4` |
+| `deepseek` | `https://api.deepseek.com` |
 
 Override with environment variables:
 - `COURSE_NOTE_API_BASE` — custom API base URL
 - `COURSE_NOTE_API_KEY` — API key (defaults to `"ollama"` if unset)
+- `COURSE_NOTE_MODEL` — shared fallback model name
+- `COURSE_NOTE_<PROVIDER>_MODEL` — provider-specific model name, preferred over `COURSE_NOTE_MODEL`
 
 ### Prompt Templates (`prompts/templates.py`)
 
@@ -131,7 +135,6 @@ course-note generate "https://youtube.com/..." \
   --scene-threshold 27.0 \
   --min-segment-seconds 20 \
   --llm-backend ollama \
-  --model qwen2.5:7b \
   --note-style summary \
   --with-course-summary \
   --with-key-terms \
@@ -148,7 +151,6 @@ course-note generate "https://youtube.com/..." `
   --scene-threshold 27.0 `
   --min-segment-seconds 20 `
   --llm-backend ollama `
-  --model qwen2.5:7b `
   --note-style summary `
   --with-course-summary `
   --with-key-terms `
@@ -162,7 +164,6 @@ course-note rewrite-notes \
   --workdir ./workdir \
   --course-name "FastAPI 入門" \
   --llm-backend ollama \
-  --model qwen2.5:7b \
   --note-style summary
 ```
 
@@ -173,7 +174,6 @@ course-note rewrite-notes `
   --workdir ./workdir `
   --course-name "FastAPI 入門" `
   --llm-backend ollama `
-  --model qwen2.5:7b `
   --note-style summary
 ```
 

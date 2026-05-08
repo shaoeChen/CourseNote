@@ -66,6 +66,8 @@ The `generate` command in `course_note/cli/main.py` performs the full pipeline:
 
 The rendered note is always written to the per-course workspace as
 `workdir/<course-name>/article.md`. The CLI no longer accepts `--output`.
+LLM model selection is resolved from `.env` via `COURSE_NOTE_MODEL` or provider-specific `COURSE_NOTE_<PROVIDER>_MODEL`; the CLI no longer accepts `--model`.
+Supported backends include `ollama`, `vllm`, `llama.cpp`, `zai`, and `deepseek`, where `deepseek` defaults to `deepseek-v4-flash`.
 
 Important detail: representative slide frames are aligned to the **end** of each segment, not the start. `sample_interval` means "how many seconds before segment end to capture the frame".
 
@@ -106,7 +108,6 @@ course-note generate "https://youtube.com/..." \
   --scene-threshold 27.0 \
   --min-segment-seconds 20 \
   --llm-backend ollama \
-  --model qwen2.5:7b \
   --note-style summary \
   --with-course-summary \
   --with-key-terms \
@@ -123,7 +124,6 @@ course-note generate "https://youtube.com/..." `
   --scene-threshold 27.0 `
   --min-segment-seconds 20 `
   --llm-backend ollama `
-  --model qwen2.5:7b `
   --note-style summary `
   --with-course-summary `
   --with-key-terms `
@@ -137,7 +137,6 @@ course-note rewrite-notes \
   --workdir ./workdir \
   --course-name "FastAPI 入門" \
   --llm-backend ollama \
-  --model qwen2.5:7b \
   --note-style summary
 ```
 
@@ -148,7 +147,6 @@ course-note rewrite-notes `
   --workdir ./workdir `
   --course-name "FastAPI 入門" `
   --llm-backend ollama `
-  --model qwen2.5:7b `
   --note-style summary
 ```
 

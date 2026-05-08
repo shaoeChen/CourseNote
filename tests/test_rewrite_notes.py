@@ -11,7 +11,6 @@ class _FakeLLMService:
         self,
         segments,
         backend: str,
-        model: str,
         note_style: str,
         include_extra_notes: bool,
     ):
@@ -23,10 +22,10 @@ class _FakeLLMService:
             for segment in segments
         ]
 
-    def summarize_course(self, segments, backend: str, model: str) -> str:
+    def summarize_course(self, segments, backend: str) -> str:
         return "course summary"
 
-    def extract_key_terms(self, segments, backend: str, model: str) -> list[str]:
+    def extract_key_terms(self, segments, backend: str) -> list[str]:
         return ["term-a", "term-b"]
 
 
@@ -65,7 +64,6 @@ def test_rewrite_notes_impl_reuses_existing_segments_and_note_metadata(
         workdir=workdir,
         source_note=source_note,
         llm_backend="ollama",
-        model="demo-model",
         note_style="summary",
         with_course_summary=True,
         with_key_terms=True,
@@ -110,7 +108,6 @@ def test_rewrite_notes_impl_allows_title_and_url_overrides(monkeypatch, tmp_path
         title="Manual Title",
         url="https://example.com/manual",
         llm_backend="ollama",
-        model="demo-model",
         note_style="structured",
     )
 

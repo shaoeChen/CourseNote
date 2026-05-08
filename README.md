@@ -24,7 +24,7 @@ pip install -e .
 
 - `yt-dlp`
 - `ffmpeg`
-- 一個可用的 OpenAI-compatible API，例如 Ollama、llama.cpp server、vLLM
+- 一個可用的 OpenAI-compatible API，例如 Ollama、llama.cpp server、vLLM、DeepSeek
 
 建議先複製一份環境設定：
 
@@ -40,7 +40,7 @@ Copy-Item .env.example .env
 
 ## LLM 設定
 
-你可以在 `.env` 中指定預設 provider、主機、port 與 model。設定好之後，平常執行 `generate` 或 `rewrite-notes` 就不一定要每次手動帶 `--llm-backend`。
+模型名稱現在統一由 `.env` 控制，不再提供 `--model` CLI 參數。你可以在 `.env` 中指定預設 provider、主機、port 與 model；設定好之後，`generate` 與 `rewrite-notes` 會直接使用這些值。
 
 例如使用 `llama.cpp`：
 
@@ -58,6 +58,14 @@ COURSE_NOTE_PROVIDER=vllm
 COURSE_NOTE_VLLM_HOST=192.168.1.20
 COURSE_NOTE_VLLM_PORT=9000
 COURSE_NOTE_VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+```
+
+例如使用 `deepseek`（預設模型為 Flash）：
+
+```env
+COURSE_NOTE_PROVIDER=deepseek
+COURSE_NOTE_DEEPSEEK_API_KEY=your_api_key
+COURSE_NOTE_DEEPSEEK_MODEL=deepseek-v4-flash
 ```
 
 如果你用 Docker Compose、反向代理，或路徑不是標準 `/v1`，也可以直接覆蓋完整 endpoint：
@@ -102,15 +110,42 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
   --with-key-terms
 ```
 
-若只想單次覆蓋 provider 或 model，CLI 參數仍然優先。
+如果 `.env` 已經設定 DeepSeek Flash，也可以直接這樣執行：
+
+`bash`：
+
+```bash
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
+  --course-name "DeepSeek 課程筆記" \
+  --subtitle-lang zh-TW \
+  --sample-interval 1 \
+  --min-segment-seconds 20 \
+  --note-style summary \
+  --with-course-summary \
+  --with-key-terms
+```
+
+`PowerShell`：
+
+```powershell
+course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
+  --course-name "DeepSeek 課程筆記" `
+  --subtitle-lang zh-TW `
+  --sample-interval 1 `
+  --min-segment-seconds 20 `
+  --note-style summary `
+  --with-course-summary `
+  --with-key-terms
+```
+
+如果只想單次覆蓋 provider，仍可使用 `--llm-backend`。模型請改成先更新 `.env` 中對應 backend 的 `COURSE_NOTE_*_MODEL`。
 
 `bash`：
 
 ```bash
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
   --course-name "FastAPI 入門" \
-  --llm-backend vllm \
-  --model Qwen/Qwen2.5-7B-Instruct
+  --llm-backend vllm
 ```
 
 `PowerShell`：
@@ -118,8 +153,7 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
 ```powershell
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
   --course-name "FastAPI 入門" `
-  --llm-backend vllm `
-  --model Qwen/Qwen2.5-7B-Instruct
+  --llm-backend vllm
 ```
 
 ### `rewrite-notes`
@@ -131,7 +165,6 @@ course-note rewrite-notes \
   --workdir workdir \
   --course-name "Python 資料分析" \
   --llm-backend ollama \
-  --model gemma4:e4b \
   --note-style near_transcript \
   --with-course-summary \
   --with-key-terms
@@ -144,7 +177,6 @@ course-note rewrite-notes `
   --workdir workdir `
   --course-name "Python 資料分析" `
   --llm-backend ollama `
-  --model gemma4:e4b `
   --note-style near_transcript `
   --with-course-summary `
   --with-key-terms

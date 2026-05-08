@@ -42,8 +42,7 @@ GENERATE_HELP = {
     "scene_threshold": "PySceneDetect content threshold. Lower values split scenes more aggressively, higher values require larger visual changes.",
     "min_segment_seconds": "Minimum allowed scene duration in seconds. Scene cuts closer than this are merged to avoid overly short segments.",
     "scene_edge_weight": "Extra weight for edge changes during scene detection; useful when slides change layout but colors stay similar.",
-    "llm_backend": "LLM backend name, such as ollama, vllm, llama.cpp, or zai. If omitted, use COURSE_NOTE_PROVIDER or the built-in default.",
-    "model": "LLM model name used for rewriting notes. If omitted, use the provider-specific env setting or built-in default.",
+    "llm_backend": "LLM backend name, such as ollama, vllm, llama.cpp, zai, or deepseek. If omitted, use COURSE_NOTE_PROVIDER or the built-in default.",
     "llm_timeout_seconds": "LLM request timeout in seconds. Increase this for slower local models such as larger Ollama models.",
     "note_style": "Prompt template name, such as summary, study_notes, structured, or near_transcript.",
     "with_course_summary": "Generate a whole-course summary section after segment notes.",
@@ -60,7 +59,6 @@ REWRITE_HELP = {
     "title": "Override note title in the regenerated Markdown.",
     "url": "Override source video URL in the regenerated Markdown.",
     "llm_backend": GENERATE_HELP["llm_backend"],
-    "model": GENERATE_HELP["model"],
     "llm_timeout_seconds": GENERATE_HELP["llm_timeout_seconds"],
     "note_style": GENERATE_HELP["note_style"],
     "with_course_summary": GENERATE_HELP["with_course_summary"],
@@ -86,7 +84,6 @@ def generate_impl(
     min_segment_seconds: int = 20,
     scene_edge_weight: float = 0.0,
     llm_backend: str | None = None,
-    model: str | None = None,
     llm_timeout_seconds: int | None = None,
     note_style: str = "summary",
     with_course_summary: bool = False,
@@ -135,7 +132,6 @@ def generate_impl(
     llm_outputs = llm_service.summarize_segments(
         segments,
         backend=llm_backend,
-        model=model,
         note_style=note_style,
         include_extra_notes=include_extra_notes,
         **summarize_kwargs,
@@ -143,12 +139,12 @@ def generate_impl(
     write_json(workdir / "llm_outputs.json", llm_outputs)
 
     course_summary = (
-        llm_service.summarize_course(segments, llm_backend, model, **summarize_kwargs)
+        llm_service.summarize_course(segments, llm_backend, **summarize_kwargs)
         if with_course_summary
         else None
     )
     key_terms = (
-        llm_service.extract_key_terms(segments, llm_backend, model, **summarize_kwargs)
+        llm_service.extract_key_terms(segments, llm_backend, **summarize_kwargs)
         if with_key_terms
         else None
     )
@@ -187,7 +183,6 @@ def rewrite_notes_impl(
     title: str | None = None,
     url: str | None = None,
     llm_backend: str | None = None,
-    model: str | None = None,
     llm_timeout_seconds: int | None = None,
     note_style: str = "summary",
     with_course_summary: bool = False,
@@ -209,7 +204,6 @@ def rewrite_notes_impl(
     llm_outputs = llm_service.summarize_segments(
         segments,
         backend=llm_backend,
-        model=model,
         note_style=note_style,
         include_extra_notes=include_extra_notes,
         **summarize_kwargs,
@@ -217,12 +211,12 @@ def rewrite_notes_impl(
     write_json(workdir / "llm_outputs.json", llm_outputs)
 
     course_summary = (
-        llm_service.summarize_course(segments, llm_backend, model, **summarize_kwargs)
+        llm_service.summarize_course(segments, llm_backend, **summarize_kwargs)
         if with_course_summary
         else None
     )
     key_terms = (
-        llm_service.extract_key_terms(segments, llm_backend, model, **summarize_kwargs)
+        llm_service.extract_key_terms(segments, llm_backend, **summarize_kwargs)
         if with_key_terms
         else None
     )
@@ -401,7 +395,6 @@ if HAS_TYPER:
         min_segment_seconds: int = typer.Option(20, help=GENERATE_HELP["min_segment_seconds"]),
         scene_edge_weight: float = typer.Option(0.0, help=GENERATE_HELP["scene_edge_weight"]),
         llm_backend: str | None = typer.Option(None, help=GENERATE_HELP["llm_backend"]),
-        model: str | None = typer.Option(None, help=GENERATE_HELP["model"]),
         llm_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["llm_timeout_seconds"]),
         note_style: str = typer.Option("summary", help=GENERATE_HELP["note_style"]),
         with_course_summary: bool = typer.Option(False, help=GENERATE_HELP["with_course_summary"]),
@@ -419,7 +412,6 @@ if HAS_TYPER:
             min_segment_seconds=min_segment_seconds,
             scene_edge_weight=scene_edge_weight,
             llm_backend=llm_backend,
-            model=model,
             llm_timeout_seconds=llm_timeout_seconds,
             note_style=note_style,
             with_course_summary=with_course_summary,
@@ -437,7 +429,6 @@ if HAS_TYPER:
         title: str | None = typer.Option(None, help=REWRITE_HELP["title"]),
         url: str | None = typer.Option(None, help=REWRITE_HELP["url"]),
         llm_backend: str | None = typer.Option(None, help=REWRITE_HELP["llm_backend"]),
-        model: str | None = typer.Option(None, help=REWRITE_HELP["model"]),
         llm_timeout_seconds: int | None = typer.Option(None, help=REWRITE_HELP["llm_timeout_seconds"]),
         note_style: str = typer.Option("summary", help=REWRITE_HELP["note_style"]),
         with_course_summary: bool = typer.Option(False, help=REWRITE_HELP["with_course_summary"]),
@@ -452,7 +443,6 @@ if HAS_TYPER:
             title=title,
             url=url,
             llm_backend=llm_backend,
-            model=model,
             llm_timeout_seconds=llm_timeout_seconds,
             note_style=note_style,
             with_course_summary=with_course_summary,
@@ -486,7 +476,6 @@ else:
         generate_parser.add_argument("--min-segment-seconds", type=int, default=20, help=GENERATE_HELP["min_segment_seconds"])
         generate_parser.add_argument("--scene-edge-weight", type=float, default=0.0, help=GENERATE_HELP["scene_edge_weight"])
         generate_parser.add_argument("--llm-backend", help=GENERATE_HELP["llm_backend"])
-        generate_parser.add_argument("--model", help=GENERATE_HELP["model"])
         generate_parser.add_argument("--llm-timeout-seconds", type=int, help=GENERATE_HELP["llm_timeout_seconds"])
         generate_parser.add_argument("--note-style", default="summary", help=GENERATE_HELP["note_style"])
         generate_parser.add_argument("--with-course-summary", action="store_true", help=GENERATE_HELP["with_course_summary"])
@@ -501,7 +490,6 @@ else:
         rewrite_parser.add_argument("--title", help=REWRITE_HELP["title"])
         rewrite_parser.add_argument("--url", help=REWRITE_HELP["url"])
         rewrite_parser.add_argument("--llm-backend", help=REWRITE_HELP["llm_backend"])
-        rewrite_parser.add_argument("--model", help=REWRITE_HELP["model"])
         rewrite_parser.add_argument("--llm-timeout-seconds", type=int, help=REWRITE_HELP["llm_timeout_seconds"])
         rewrite_parser.add_argument("--note-style", default="summary", help=REWRITE_HELP["note_style"])
         rewrite_parser.add_argument("--with-course-summary", action="store_true", help=REWRITE_HELP["with_course_summary"])
@@ -528,7 +516,6 @@ else:
                 min_segment_seconds=args.min_segment_seconds,
                 scene_edge_weight=args.scene_edge_weight,
                 llm_backend=args.llm_backend,
-                model=args.model,
                 llm_timeout_seconds=args.llm_timeout_seconds,
                 note_style=args.note_style,
                 with_course_summary=args.with_course_summary,
@@ -545,7 +532,6 @@ else:
                 title=args.title,
                 url=args.url,
                 llm_backend=args.llm_backend,
-                model=args.model,
                 llm_timeout_seconds=args.llm_timeout_seconds,
                 note_style=args.note_style,
                 with_course_summary=args.with_course_summary,

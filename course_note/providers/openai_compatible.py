@@ -51,6 +51,12 @@ class OpenAICompatibleClient:
             default_api_key="",
             default_model="glm-4.5-air",
         ),
+        "deepseek": ProviderDefaults(
+            env_prefix="DEEPSEEK",
+            default_api_base="https://api.deepseek.com",
+            default_api_key="",
+            default_model="deepseek-v4-flash",
+        ),
     }
 
     BACKEND_ALIASES = {
@@ -59,19 +65,20 @@ class OpenAICompatibleClient:
         "llama.cpp": "llama.cpp",
         "llamacpp": "llama.cpp",
         "zai": "zai",
+        "deepseek": "deepseek",
+        "deepseek-flash": "deepseek",
     }
 
     def resolve_config(
         self,
         backend: str | None,
-        model: str | None,
         timeout_seconds: int | None = None,
     ) -> ProviderConfig:
         resolved_backend = self._resolve_backend_name(backend)
         defaults = self.DEFAULTS[resolved_backend]
         api_base = self._resolve_api_base(defaults)
         api_key = self._resolve_api_key(defaults)
-        resolved_model = self._resolve_model(defaults, model)
+        resolved_model = self._resolve_model(defaults)
         resolved_timeout = timeout_seconds if timeout_seconds is not None else int(os.getenv("COURSE_NOTE_LLM_TIMEOUT_SECONDS", "120"))
         if not api_base:
             raise RuntimeError(f"No API base configured for backend '{resolved_backend}'.")
@@ -122,9 +129,7 @@ class OpenAICompatibleClient:
             or defaults.default_api_key
         )
 
-    def _resolve_model(self, defaults: ProviderDefaults, model: str | None) -> str:
-        if model:
-            return model
+    def _resolve_model(self, defaults: ProviderDefaults) -> str:
         env_prefix = defaults.env_prefix
         return (
             os.getenv(f"COURSE_NOTE_{env_prefix}_MODEL")

@@ -74,7 +74,7 @@ def test_generate_subcommand_accepts_llm_timeout_seconds(monkeypatch: pytest.Mon
     assert captured["llm_timeout_seconds"] == 300
 
 
-def test_generate_subcommand_leaves_llm_backend_and_model_to_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generate_subcommand_leaves_llm_backend_to_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = CliRunner()
     captured: dict[str, object] = {}
 
@@ -95,7 +95,26 @@ def test_generate_subcommand_leaves_llm_backend_and_model_to_env_defaults(monkey
 
     assert result.exit_code == 0
     assert captured["llm_backend"] is None
-    assert captured["model"] is None
+    assert "model" not in captured
+
+
+def test_generate_subcommand_rejects_removed_model_option() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "generate",
+            "https://example.com/watch?v=demo",
+            "--course-name",
+            "demo-course",
+            "--model",
+            "demo-model",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "No such option: --model" in result.output
 
 
 def test_generate_subcommand_requires_course_name() -> None:

@@ -19,7 +19,6 @@ class _FakeLLMService:
         self,
         segments: list[SlideSegment],
         backend: str,
-        model: str,
         note_style: str,
         include_extra_notes: bool,
     ) -> list[dict[str, str | None]]:
@@ -31,10 +30,10 @@ class _FakeLLMService:
             for segment in segments
         ]
 
-    def summarize_course(self, segments, backend: str, model: str) -> str:
+    def summarize_course(self, segments, backend: str) -> str:
         raise AssertionError("summarize_course should not be called in this test")
 
-    def extract_key_terms(self, segments, backend: str, model: str) -> list[str]:
+    def extract_key_terms(self, segments, backend: str) -> list[str]:
         raise AssertionError("extract_key_terms should not be called in this test")
 
 

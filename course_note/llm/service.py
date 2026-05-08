@@ -13,14 +13,13 @@ class LLMService:
         self,
         segments: list[SlideSegment],
         backend: str | None,
-        model: str | None,
         note_style: str,
         include_extra_notes: bool,
         timeout_seconds: int | None = None,
     ) -> list[dict[str, str | None]]:
         if note_style not in TEMPLATES:
             raise ValueError(f"Unsupported note style: {note_style}")
-        config = self.client.resolve_config(backend, model, timeout_seconds=timeout_seconds)
+        config = self.client.resolve_config(backend, timeout_seconds=timeout_seconds)
         results: list[dict[str, str | None]] = []
         for segment in segments:
             prompt = TEMPLATES[note_style].format(text=segment.transcript or "（本段沒有可用字幕內容）")
@@ -37,10 +36,9 @@ class LLMService:
         self,
         segments: list[SlideSegment],
         backend: str | None,
-        model: str | None,
         timeout_seconds: int | None = None,
     ) -> str:
-        config = self.client.resolve_config(backend, model, timeout_seconds=timeout_seconds)
+        config = self.client.resolve_config(backend, timeout_seconds=timeout_seconds)
         merged = "\n".join(segment.summary for segment in segments if segment.summary)
         prompt = f"請根據以下各段課程重點，輸出整堂課的總結。\n\n{merged}"
         return self.client.chat(config, prompt)
@@ -49,10 +47,9 @@ class LLMService:
         self,
         segments: list[SlideSegment],
         backend: str | None,
-        model: str | None,
         timeout_seconds: int | None = None,
     ) -> list[str]:
-        config = self.client.resolve_config(backend, model, timeout_seconds=timeout_seconds)
+        config = self.client.resolve_config(backend, timeout_seconds=timeout_seconds)
         merged = "\n".join(segment.transcript for segment in segments if segment.transcript)
         prompt = f"請從以下課程內容萃取關鍵術語，使用一行一個詞彙輸出。\n\n{merged}"
         content = self.client.chat(config, prompt)
