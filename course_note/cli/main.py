@@ -67,6 +67,13 @@ REWRITE_HELP = {
     "include_transcript": GENERATE_HELP["include_transcript"],
 }
 
+DOWNLOAD_SUBTITLES_HELP = {
+    "url": GENERATE_HELP["url"],
+    "course_name": GENERATE_HELP["course_name"],
+    "subtitle_lang": GENERATE_HELP["subtitle_lang"],
+    "workdir": GENERATE_HELP["workdir"],
+}
+
 PUBLISH_HELP = {
     "course_name": "Required course identifier used to resolve the per-course frames directory under --workdir.",
     "title": "HackMD note title. Defaults to the first Markdown heading.",
@@ -232,6 +239,50 @@ def rewrite_notes_impl(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(MarkdownRenderer().render(note, include_transcript=include_transcript), encoding="utf-8")
     message = f"Markdown note rewritten at {output}"
+    if HAS_TYPER:
+        typer.echo(message)
+    else:
+        print(message)
+
+
+def download_subtitles_impl(
+    url: str,
+    course_name: str,
+    subtitle_lang: str = "zh-TW",
+    workdir: Path = Path("workdir"),
+) -> None:
+    workdir = resolve_course_workdir(workdir, course_name)
+    metadata = load_course_workspace_metadata(workdir)
+    _validate_course_workspace(metadata, course_name=course_name, url=url, workdir=workdir)
+
+    subtitle_result = _load_or_download_subtitles(
+        url=url,
+        workdir=workdir,
+        subtitle_lang=subtitle_lang,
+        course_name=course_name,
+        metadata=metadata,
+    )
+    transcripts = SubtitleParser().parse_vtt(
+        subtitle_result.subtitle_path,
+        lang=subtitle_result.language,
+        source=subtitle_result.source,
+    )
+    write_json(subtitle_result.transcript_json_path, [segment.to_dict() for segment in transcripts])
+    write_course_workspace_metadata(
+        workdir,
+        CourseWorkspaceMetadata(
+            course_name=course_name,
+            source_url=url,
+            title=subtitle_result.title,
+            subtitle_language=subtitle_result.language,
+            subtitle_source=subtitle_result.source,
+        ),
+    )
+
+    message = (
+        f"Subtitles downloaded at {subtitle_result.subtitle_path}; "
+        f"transcript written at {subtitle_result.transcript_json_path}"
+    )
     if HAS_TYPER:
         typer.echo(message)
     else:
@@ -451,6 +502,20 @@ if HAS_TYPER:
             include_transcript=include_transcript,
         )
 
+    @app.command("download-subtitles")
+    def download_subtitles(
+        url: str = typer.Argument(..., help=DOWNLOAD_SUBTITLES_HELP["url"]),
+        course_name: str = typer.Option(..., help=DOWNLOAD_SUBTITLES_HELP["course_name"]),
+        subtitle_lang: str = typer.Option("zh-TW", help=DOWNLOAD_SUBTITLES_HELP["subtitle_lang"]),
+        workdir: Path = typer.Option(Path("workdir"), help=DOWNLOAD_SUBTITLES_HELP["workdir"]),
+    ) -> None:
+        download_subtitles_impl(
+            url=url,
+            course_name=course_name,
+            subtitle_lang=subtitle_lang,
+            workdir=workdir,
+        )
+
     @app.command("publish-hackmd")
     def publish_hackmd(
         course_name: str = typer.Option(..., help=PUBLISH_HELP["course_name"]),
@@ -483,6 +548,11 @@ else:
         generate_parser.add_argument("--include-extra-notes", action="store_true", help=GENERATE_HELP["include_extra_notes"])
         generate_parser.add_argument("--include-transcript", action="store_true", help=GENERATE_HELP["include_transcript"])
         generate_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
+        download_subtitles_parser = subparsers.add_parser("download-subtitles", help="Download and parse subtitles only.")
+        download_subtitles_parser.add_argument("url", help=DOWNLOAD_SUBTITLES_HELP["url"])
+        download_subtitles_parser.add_argument("--course-name", required=True, help=DOWNLOAD_SUBTITLES_HELP["course_name"])
+        download_subtitles_parser.add_argument("--subtitle-lang", default="zh-TW", help=DOWNLOAD_SUBTITLES_HELP["subtitle_lang"])
+        download_subtitles_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=DOWNLOAD_SUBTITLES_HELP["workdir"])
         rewrite_parser = subparsers.add_parser("rewrite-notes", help="Reuse existing segments and only regenerate note content.")
         rewrite_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=REWRITE_HELP["workdir"])
         rewrite_parser.add_argument("--course-name", required=True, help=REWRITE_HELP["course_name"])
@@ -522,6 +592,13 @@ else:
                 with_key_terms=args.with_key_terms,
                 include_extra_notes=args.include_extra_notes,
                 include_transcript=args.include_transcript,
+                workdir=args.workdir,
+            )
+        if args.command == "download-subtitles":
+            download_subtitles_impl(
+                url=args.url,
+                course_name=args.course_name,
+                subtitle_lang=args.subtitle_lang,
                 workdir=args.workdir,
             )
         if args.command == "rewrite-notes":

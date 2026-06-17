@@ -17,6 +17,7 @@ def test_typer_exposes_generate_subcommand() -> None:
 
     assert result.exit_code == 0
     assert "generate" in result.stdout
+    assert "download-subtitles" in result.stdout
     assert "rewrite-notes" in result.stdout
     assert "publish-hackmd" in result.stdout
 
@@ -130,6 +131,36 @@ def test_generate_subcommand_requires_course_name() -> None:
 
     assert result.exit_code != 0
     assert "--course-name" in result.output
+
+
+def test_download_subtitles_subcommand_accepts_url_and_course_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    def fake_download_subtitles_impl(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "download_subtitles_impl", fake_download_subtitles_impl)
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "download-subtitles",
+            "https://example.com/watch?v=demo",
+            "--course-name",
+            "demo-course",
+            "--subtitle-lang",
+            "en",
+            "--workdir",
+            "saved-workdir",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["url"] == "https://example.com/watch?v=demo"
+    assert captured["course_name"] == "demo-course"
+    assert captured["subtitle_lang"] == "en"
+    assert captured["workdir"] == Path("saved-workdir")
 
 
 def test_publish_hackmd_subcommand_accepts_course_name(monkeypatch: pytest.MonkeyPatch) -> None:

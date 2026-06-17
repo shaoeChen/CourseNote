@@ -6,6 +6,7 @@ import pytest
 
 from course_note.cli import main as cli_main
 from course_note.models import SlideSegment
+from course_note.subtitle.downloader import SubtitleDownloadResult
 from course_note.utils.io import (
     CourseWorkspaceMetadata,
     load_course_workspace_metadata,
@@ -166,3 +167,61 @@ def test_generate_impl_rejects_reusing_course_name_with_different_url(tmp_path: 
             course_name="Demo Course",
             workdir=base_workdir,
         )
+
+
+def test_download_subtitles_impl_writes_subtitle_transcript_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    base_workdir = tmp_path / "workdir"
+    course_workdir = resolve_course_workdir(base_workdir, "Demo Course")
+
+    class _FakeSubtitleDownloader:
+        def download(self, url: str, workdir: Path, language: str) -> SubtitleDownloadResult:
+            assert url == "https://example.com/watch?v=demo"
+            assert workdir == course_workdir
+            assert language == "en"
+            subtitle_path = workdir / "subtitles.vtt"
+            subtitle_path.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nhello world\n",
+                encoding="utf-8",
+            )
+            return SubtitleDownloadResult(
+                title="Downloaded Title",
+                subtitle_path=subtitle_path,
+                transcript_json_path=workdir / "transcript.json",
+                source="native",
+                language=language,
+            )
+
+    class _FailingVideoDownloader:
+        def download(self, url: str, workdir: Path) -> Path:
+            raise AssertionError("video download should not run when only downloading subtitles")
+
+    class _FailingLLMService:
+        def summarize_segments(self, *args, **kwargs):
+            raise AssertionError("LLM should not run when only downloading subtitles")
+
+    monkeypatch.setattr(cli_main, "YouTubeSubtitleDownloader", lambda: _FakeSubtitleDownloader())
+    monkeypatch.setattr(cli_main, "VideoDownloader", lambda: _FailingVideoDownloader())
+    monkeypatch.setattr(cli_main, "LLMService", lambda: _FailingLLMService())
+
+    cli_main.download_subtitles_impl(
+        url="https://example.com/watch?v=demo",
+        course_name="Demo Course",
+        subtitle_lang="en",
+        workdir=base_workdir,
+    )
+
+    metadata = load_course_workspace_metadata(course_workdir)
+
+    assert (course_workdir / "subtitles.vtt").exists()
+    assert (course_workdir / "transcript.json").exists()
+    assert not (course_workdir / "video.mp4").exists()
+    assert not (course_workdir / "segments.json").exists()
+    assert metadata is not None
+    assert metadata.course_name == "Demo Course"
+    assert metadata.source_url == "https://example.com/watch?v=demo"
+    assert metadata.title == "Downloaded Title"
+    assert metadata.subtitle_language == "en"
+    assert metadata.subtitle_source == "native"

@@ -7,6 +7,7 @@ CourseNote 是一個本地端 CLI 工具，用來把 YouTube 課程影片整理�
 ## 功能
 
 - 下載 YouTube 影片、字幕與中繼資料
+- 可單獨下載字幕並輸出逐字稿 JSON
 - 優先使用原生字幕，次選自動字幕；沒有字幕時直接失敗
 - 使用 PySceneDetect 做 scene detection
 - 依場景切段，並擷取每段代表截圖
@@ -154,6 +155,32 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
 course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
   --course-name "FastAPI 入門" `
   --llm-backend vllm
+```
+
+### `download-subtitles`
+
+如果只想先取得字幕，不下載影片、不偵測場景、也不呼叫 LLM，可以使用 `download-subtitles`。它會優先下載原生字幕，沒有時改抓自動字幕，並輸出到同一個課程工作區：
+
+- `workdir/<course-name>/subtitles.vtt`
+- `workdir/<course-name>/transcript.json`
+- `workdir/<course-name>/course_metadata.json`
+
+`bash`：
+
+```bash
+course-note download-subtitles "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
+  --course-name "FastAPI 入門" \
+  --subtitle-lang zh-TW \
+  --workdir workdir
+```
+
+`PowerShell`：
+
+```powershell
+course-note download-subtitles "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
+  --course-name "FastAPI 入門" `
+  --subtitle-lang zh-TW `
+  --workdir workdir
 ```
 
 ### `rewrite-notes`
@@ -341,15 +368,15 @@ course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" \
 `PowerShell`：
 
 ```powershell
-course-note generate "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
-  --course-name "FastAPI 入門" `
+course-note generate "https://www.youtube.com/watch?v=vXb2QYOUzl4" `
+  --course-name "加快語言模型生成速度 (1/2)：Flash Attention" `
   --subtitle-lang zh-TW `
   --sample-interval 1 `
   --scene-threshold 30 `
   --scene-edge-weight 0.0 `
   --min-segment-seconds 30 `
   --workdir workdir `
-  --llm-backend ollama `
+  --llm-backend llamacpp `
   --model qwen3:8b `
   --note-style near_transcript `
   --with-key-terms
@@ -400,4 +427,19 @@ workdir/
     scenes.json
     segments.json
     llm_outputs.json
+```
+
+## 常用
+李宏毅教授課程：
+```
+course-note generate "https://www.youtube.com/watch?v=fDQaadKysSA" `
+  --course-name "加快語言模型生成速度 (2/2)：KV Cache" `
+  --subtitle-lang zh-TW `
+  --sample-interval 1 `
+  --scene-threshold 15 `
+  --scene-edge-weight 0.3 `
+  --min-segment-seconds 20 `
+  --workdir workdir `
+  --note-style near_transcript `
+  --with-key-terms
 ```
