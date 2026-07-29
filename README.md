@@ -25,7 +25,7 @@ pip install -e .
 
 - `yt-dlp`
 - `ffmpeg`
-- 一個可用的 OpenAI-compatible API，例如 Ollama、llama.cpp server、vLLM、DeepSeek
+- 一個可用的 OpenAI-compatible API，例如 Ollama、llama.cpp server、vLLM、DeepSeek、ClinePass
 
 建議先複製一份環境設定：
 
@@ -67,6 +67,14 @@ COURSE_NOTE_VLLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 COURSE_NOTE_PROVIDER=deepseek
 COURSE_NOTE_DEEPSEEK_API_KEY=your_api_key
 COURSE_NOTE_DEEPSEEK_MODEL=deepseek-v4-flash
+```
+
+例如使用 `clinepass`：
+
+```env
+COURSE_NOTE_PROVIDER=clinepass
+COURSE_NOTE_CLINEPASS_API_KEY=your_api_key
+COURSE_NOTE_CLINEPASS_MODEL=cline-pass/deepseek-v4-flash
 ```
 
 如果你用 Docker Compose、反向代理，或路徑不是標準 `/v1`，也可以直接覆蓋完整 endpoint：

@@ -2,10 +2,31 @@ from __future__ import annotations
 
 import os
 import urllib.request
+from contextlib import AbstractContextManager
+from types import TracebackType
 
 import pytest
 
 from course_note.providers.openai_compatible import OpenAICompatibleClient, ProviderConfig
+
+
+class FakeResponse(AbstractContextManager["FakeResponse"]):
+    def __init__(self, body: str) -> None:
+        self.body = body
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body.encode("utf-8")
 
 
 def test_chat_timeout_error_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -25,6 +46,26 @@ def test_chat_timeout_error_is_wrapped(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(RuntimeError, match="timed out after 300 seconds"):
         client.chat(config, "hello")
+
+
+def test_chat_reads_choices_from_clinepass_data_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpenAICompatibleClient()
+    config = ProviderConfig(
+        backend="clinepass",
+        model="cline-pass/deepseek-v4-flash",
+        api_base="https://api.cline.bot/api/v1",
+        api_key="cline-key",
+        timeout_seconds=120,
+    )
+
+    def fake_urlopen(*args: object, **kwargs: object) -> FakeResponse:
+        return FakeResponse(
+            '{"data":{"choices":[{"message":{"content":"Wrapped response"}}]}}'
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert client.chat(config, "hello") == "Wrapped response"
 
 
 def test_resolve_config_reads_llm_timeout_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,3 +138,17 @@ def test_resolve_config_supports_deepseek_flash_alias(monkeypatch: pytest.Monkey
 
     assert config.backend == "deepseek"
     assert config.model == "deepseek-v4-flash"
+
+
+def test_resolve_config_supports_clinepass_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpenAICompatibleClient()
+    monkeypatch.setenv("COURSE_NOTE_PROVIDER", "clinepass")
+    monkeypatch.setenv("COURSE_NOTE_CLINEPASS_API_KEY", "cline-key")
+    monkeypatch.setenv("COURSE_NOTE_CLINEPASS_MODEL", "cline-pass/qwen3.7-max")
+
+    config = client.resolve_config(None)
+
+    assert config.backend == "clinepass"
+    assert config.api_base == "https://api.cline.bot/api/v1"
+    assert config.api_key == "cline-key"
+    assert config.model == "cline-pass/qwen3.7-max"

@@ -42,7 +42,7 @@ GENERATE_HELP = {
     "scene_threshold": "PySceneDetect content threshold. Lower values split scenes more aggressively, higher values require larger visual changes.",
     "min_segment_seconds": "Minimum allowed scene duration in seconds. Scene cuts closer than this are merged to avoid overly short segments.",
     "scene_edge_weight": "Extra weight for edge changes during scene detection; useful when slides change layout but colors stay similar.",
-    "llm_backend": "LLM backend name, such as ollama, vllm, llama.cpp, zai, or deepseek. If omitted, use COURSE_NOTE_PROVIDER or the built-in default.",
+    "llm_backend": "LLM backend name, such as ollama, vllm, llama.cpp, zai, deepseek, or clinepass. If omitted, use COURSE_NOTE_PROVIDER or the built-in default.",
     "llm_timeout_seconds": "LLM request timeout in seconds. Increase this for slower local models such as larger Ollama models.",
     "note_style": "Prompt template name, such as summary, study_notes, structured, or near_transcript.",
     "with_course_summary": "Generate a whole-course summary section after segment notes.",

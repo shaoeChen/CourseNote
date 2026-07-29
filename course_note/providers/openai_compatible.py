@@ -57,6 +57,12 @@ class OpenAICompatibleClient:
             default_api_key="",
             default_model="deepseek-v4-flash",
         ),
+        "clinepass": ProviderDefaults(
+            env_prefix="CLINEPASS",
+            default_api_base="https://api.cline.bot/api/v1",
+            default_api_key="",
+            default_model="cline-pass/deepseek-v4-flash",
+        ),
     }
 
     BACKEND_ALIASES = {
@@ -67,6 +73,8 @@ class OpenAICompatibleClient:
         "zai": "zai",
         "deepseek": "deepseek",
         "deepseek-flash": "deepseek",
+        "clinepass": "clinepass",
+        "cline-pass": "clinepass",
     }
 
     def resolve_config(
@@ -171,4 +179,7 @@ class OpenAICompatibleClient:
                 f"Failed to reach the LLM backend at {config.api_base}: {exc.reason}"
             ) from exc
         result = json.loads(body)
-        return result["choices"][0]["message"]["content"].strip()
+        choices = result.get("choices") or result.get("data", {}).get("choices")
+        if not choices:
+            raise RuntimeError(f"LLM response did not include choices: {body[:500]}")
+        return choices[0]["message"]["content"].strip()
