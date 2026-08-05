@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^d:/python/CourseNote/\\.venv/Scripts/python\\.exe -m pytest tests/test_cli\\.py tests/test_generate\\.py tests/test_rewrite_notes\\.py tests/test_openai_compatible\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
