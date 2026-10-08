@@ -27,6 +27,9 @@ dev = [
 whisper = [
   "faster-whisper>=1.0",
 ]
+vision = [
+  "opencv-python-headless>=4.8,<5.0",
+]
 
 [project.scripts]
 course-note = "course_note.cli.main:run"

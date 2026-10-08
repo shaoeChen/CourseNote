@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(slots=True)
@@ -108,6 +110,37 @@ class OpenAICompatibleClient:
             )
         return normalized_backend
 
+    def resolve_vision_config(
+        self,
+        backend: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> ProviderConfig:
+        resolved_backend = self._resolve_backend_name(
+            backend or os.getenv("COURSE_NOTE_VISION_PROVIDER") or "vllm"
+        )
+        defaults = self.DEFAULTS[resolved_backend]
+        model = (os.getenv("COURSE_NOTE_VISION_MODEL") or "").strip()
+        if not model:
+            raise RuntimeError("COURSE_NOTE_VISION_MODEL must explicitly name a vision-capable model.")
+        timeout_value = (
+            timeout_seconds if timeout_seconds is not None
+            else os.getenv("COURSE_NOTE_VISION_TIMEOUT_SECONDS", "120")
+        )
+        timeout_error = "COURSE_NOTE_VISION_TIMEOUT_SECONDS / --vision-timeout-seconds must be a positive integer."
+        if timeout_seconds is not None and (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)):
+            raise RuntimeError(timeout_error)
+        try:
+            resolved_timeout = int(timeout_value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(timeout_error) from exc
+        if resolved_timeout <= 0:
+            raise RuntimeError(timeout_error)
+        api_base = os.getenv("COURSE_NOTE_VISION_API_BASE", self._resolve_api_base(defaults)).strip()
+        api_key = os.getenv("COURSE_NOTE_VISION_API_KEY", self._resolve_api_key(defaults))
+        if not api_base:
+            raise RuntimeError(f"No API base configured for vision backend '{resolved_backend}'.")
+        return ProviderConfig(resolved_backend, model, api_base, api_key, resolved_timeout)
+
     def _resolve_api_base(self, defaults: ProviderDefaults) -> str:
         env_prefix = defaults.env_prefix
         provider_api_base = os.getenv(f"COURSE_NOTE_{env_prefix}_API_BASE")
@@ -146,10 +179,28 @@ class OpenAICompatibleClient:
         )
 
     def chat(self, config: ProviderConfig, prompt: str) -> str:
+        return self._chat(config, prompt)
+
+    def chat_images(self, config: ProviderConfig, prompt: str, images: list[Path]) -> str:
+        content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+        for image in images:
+            image_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(image.suffix.lower())
+            if image_type is None:
+                raise RuntimeError(f"Unsupported image format for '{image}'; use local JPEG or PNG files.")
+            try:
+                encoded = base64.b64encode(image.read_bytes()).decode("ascii")
+            except OSError as exc:
+                raise RuntimeError(f"Unable to read image '{image}': {exc}") from exc
+            content.append({"type": "image_url", "image_url": {"url": f"data:{image_type};base64,{encoded}"}})
+        return self._chat(config, content, vision=True)
+
+    def _chat(
+        self, config: ProviderConfig, content: str | list[dict[str, object]], *, vision: bool = False
+    ) -> str:
         payload = json.dumps(
             {
                 "model": config.model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": content}],
                 "temperature": 0.2,
             }
         ).encode("utf-8")
@@ -165,21 +216,40 @@ class OpenAICompatibleClient:
         try:
             with urllib.request.urlopen(request, timeout=config.timeout_seconds) as response:
                 body = response.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("LLM response did not contain valid UTF-8 text.") from exc
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"LLM request failed with status {exc.code}: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
+            timeout_setting = (
+                "--vision-timeout-seconds / COURSE_NOTE_VISION_TIMEOUT_SECONDS" if vision
+                else "--llm-timeout-seconds / COURSE_NOTE_LLM_TIMEOUT_SECONDS"
+            )
             raise RuntimeError(
                 f"LLM request to {config.api_base} timed out after {config.timeout_seconds} seconds. "
                 f"Check whether the backend is running, the model '{config.model}' is available, "
-                "or increase --llm-timeout-seconds / COURSE_NOTE_LLM_TIMEOUT_SECONDS."
+                f"or increase {timeout_setting}."
             ) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(
                 f"Failed to reach the LLM backend at {config.api_base}: {exc.reason}"
             ) from exc
-        result = json.loads(body)
-        choices = result.get("choices") or result.get("data", {}).get("choices")
-        if not choices:
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"LLM response did not contain valid JSON: {body[:500]}") from exc
+        if not isinstance(result, dict):
+            raise RuntimeError(f"LLM response must be a JSON object: {body[:500]}")
+        choices = result.get("choices")
+        data = result.get("data")
+        if not choices and isinstance(data, dict):
+            choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
             raise RuntimeError(f"LLM response did not include choices: {body[:500]}")
-        return choices[0]["message"]["content"].strip()
+        first_choice = choices[0]
+        message = first_choice.get("message") if isinstance(first_choice, dict) else None
+        response_content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(response_content, str) or not response_content.strip():
+            raise RuntimeError(f"LLM response did not include nonempty text message content: {body[:500]}")
+        return response_content.strip()

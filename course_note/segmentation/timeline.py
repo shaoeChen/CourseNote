@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from course_note.models import SlideSegment, TranscriptSegment
-from course_note.utils.timefmt import format_compact_filename
+from course_note.utils.timefmt import format_compact_filename, scene_frame_filename
 
 
 class SegmentBuilder:
@@ -20,9 +20,14 @@ class SegmentBuilder:
             text_parts = [
                 item.text
                 for item in transcripts
-                if item.end_sec >= start and item.start_sec <= end
+                if item.end_sec > start and item.start_sec < end
             ]
-            screenshot_name = self._resolve_screenshot(frames_dir, end)
+            if "capture_sec" in scene:
+                screenshot_name = scene_frame_filename(scene)
+                if not (frames_dir / screenshot_name).is_file():
+                    raise FileNotFoundError(f"Selected slide frame is missing: {screenshot_name}")
+            else:
+                screenshot_name = self._resolve_screenshot(frames_dir, end)
             segments.append(
                 SlideSegment(
                     start_sec=start,

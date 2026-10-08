@@ -1,5 +1,53 @@
 # CourseNote
 
+### 簡報辨識模式（hybrid）
+
+對於教室鏡頭與全螢幕簡報交替的影片，可以啟用 `--scene-mode hybrid`。原本的 `algorithm` 模式仍是預設。
+
+Hybrid 先用現有演算法找候選切點，再加入定時取樣，由視覺語言模型比較簡報內容。相同簡報的鏡頭切換與逐步揭露內容不另切段；確認新頁後，在前後取樣間細查換頁位置（目標範圍 0.5 秒）。截圖從每段已確認的可讀簡報中挑選，優先模型評分較高的畫面，同分取較晚的畫面。
+
+圖片擷取需要 OpenCV，可用 `pip install -e ".[vision]"` 或 `uv sync --extra vision` 安裝。模型服務需另外啟動；這項安裝不會下載視覺模型。
+
+請先在 `.env` 設定**支援多張圖片輸入的視覺模型**。`vllm` 是服務後端，模型本身必須具備圖片理解能力；現有寫筆記的模型仍由原本的 `COURSE_NOTE_PROVIDER` 等設定控制。
+
+```dotenv
+COURSE_NOTE_VISION_PROVIDER=vllm
+COURSE_NOTE_VISION_MODEL=your-vision-model
+COURSE_NOTE_VISION_API_BASE=http://127.0.0.1:8000/v1
+COURSE_NOTE_VISION_API_KEY=EMPTY
+COURSE_NOTE_VISION_TIMEOUT_SECONDS=120
+```
+
+`your-vision-model` 請換成服務端實際載入的模型 ID。也可使用 `ollama`、`llama.cpp` 等相容 API 後端；只有該模型與服務支援圖片時才能使用。未設定 `COURSE_NOTE_VISION_MODEL` 會提前報錯，程式不會自動改用文字模型。視覺連線設定省略時沿用所選後端的連線設定；視覺模型名稱與逾時設定獨立。
+
+對已下載影片的課程，先執行預覽，不需字幕或文字 LLM，也不會覆寫 `article.md`、`segments.json`、原本的 `frames/`：
+
+```powershell
+course-note detect-slides `
+  --course-name "Stanford CS329A Self-Improving AI Agents | Part 1 | Course Overview" `
+  --vision-backend vllm `
+  --scene-threshold 15 `
+  --scene-edge-weight 0.3 `
+  --vision-scan-interval 5 `
+  --workdir workdir
+```
+
+預覽輸出為 `workdir/<課程名稱>/slide_preview/preview.md` 及 `frames/`。判斷依據、低信心結果與待檢查範圍保存在 `slide_analysis/slide_review.json`；候選切點與統計也保留在該目錄。
+
+檢查預覽後，用原本的 `generate` 命令加入：
+
+```powershell
+  --scene-mode hybrid `
+  --vision-backend vllm `
+  --vision-scan-interval 5
+```
+
+Hybrid 的候選切點使用一秒的最小間隔，**不套用 `--min-segment-seconds` 的最終切點合併**，避免短簡報被丟掉。`--sample-interval` 僅用於沒有確認可讀簡報的區段；其餘區段採用視覺模型選出的截圖時間。新截圖檔名包含區段結束時間的毫秒值，避免短區段覆蓋同名圖片。兩個模式都依字幕與區段實際重疊配對，恰好在分界開始的字幕歸下一段。
+
+`--vision-scan-interval` 越小，越有機會找到短暫出現的頁面，也會增加請求量；約 70 分鐘影片以五秒取樣，定時取樣就約有 840 次，另有候選切點與細查請求。`vision_cache.json` 以模型、API 位址、提示與圖片內容識別結果，每次成功判斷後保存；重跑預覽與 generate 可重用同一份分析快取。
+
+模型無法確認、簡報被遮擋或低於信心門檻時，程式會留下待檢查範圍；這些情況不代表已確認「同一頁」。可讀畫面之間的切點仍可能只是推估，請依報告檢查。取樣間出現又消失的短頁面，以及講者鏡頭完全遮住的換頁，也可能無法還原。API 失敗或模型輸出不符合結構會停止分析並保留已完成的快取，不會偷偷退回純演算法模式。
+
 CourseNote 是一個本地端 CLI 工具，用來把 YouTube 課程影片整理成結構化 Markdown 筆記。
 
 它會下載字幕與影片、偵測場景切換、擷取每段代表畫面，再把逐段內容交給 OpenAI-compatible LLM 改寫成可閱讀的課程筆記。

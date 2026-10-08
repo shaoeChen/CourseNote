@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -9,8 +10,10 @@ from typing import Any
 from course_note.hackmd import HackMDPublisher
 from course_note.llm.service import LLMService
 from course_note.models import CourseNote, SlideSegment
+from course_note.providers.openai_compatible import OpenAICompatibleClient
 from course_note.renderers.markdown import MarkdownRenderer
 from course_note.segmentation.scenes import SceneDetectorService
+from course_note.segmentation.slides import HybridSlideDetector
 from course_note.segmentation.timeline import SegmentBuilder
 from course_note.subtitle.downloader import SubtitleDownloadResult, YouTubeSubtitleDownloader
 from course_note.subtitle.parser import SubtitleParser
@@ -19,9 +22,11 @@ from course_note.utils.io import (
     CourseWorkspaceMetadata,
     load_course_workspace_metadata,
     resolve_course_workdir,
+    sanitize_course_name,
     write_course_workspace_metadata,
     write_json,
 )
+from course_note.utils.timefmt import scene_frame_filename
 from course_note.video.downloader import VideoDownloader
 from course_note.video.frames import FrameSampler
 
@@ -42,6 +47,10 @@ GENERATE_HELP = {
     "scene_threshold": "PySceneDetect content threshold. Lower values split scenes more aggressively, higher values require larger visual changes.",
     "min_segment_seconds": "Minimum allowed scene duration in seconds. Scene cuts closer than this are merged to avoid overly short segments.",
     "scene_edge_weight": "Extra weight for edge changes during scene detection; useful when slides change layout but colors stay similar.",
+    "scene_mode": "algorithm (default) detects visual cuts; hybrid uses a separately configured vision model to detect slide pages. Hybrid uses one-second candidate spacing and ignores --min-segment-seconds.",
+    "vision_backend": "Vision backend override; defaults to COURSE_NOTE_VISION_PROVIDER or vllm. Requires COURSE_NOTE_VISION_MODEL.",
+    "vision_scan_interval": "Periodic vision sampling interval in seconds (default 5). Smaller values find shorter slides and increase model requests.",
+    "vision_timeout_seconds": "Vision request timeout; defaults to COURSE_NOTE_VISION_TIMEOUT_SECONDS or 120.",
     "llm_backend": "LLM backend name, such as ollama, vllm, llama.cpp, zai, deepseek, or clinepass. If omitted, use COURSE_NOTE_PROVIDER or the built-in default.",
     "llm_timeout_seconds": "LLM request timeout in seconds. Increase this for slower local models such as larger Ollama models.",
     "note_style": "Prompt template name, such as summary, study_notes, structured, or near_transcript.",
@@ -104,7 +113,12 @@ def generate_impl(
     whisper_model: str = "small",
     whisper_device: str = "auto",
     workdir: Path = Path("workdir"),
+    scene_mode: str = "algorithm",
+    vision_backend: str | None = None,
+    vision_scan_interval: float = 5.0,
+    vision_timeout_seconds: int | None = None,
 ) -> None:
+    _validate_slide_options(scene_mode, vision_backend, vision_scan_interval, vision_timeout_seconds)
     workdir = resolve_course_workdir(workdir, course_name)
     metadata = load_course_workspace_metadata(workdir)
     _validate_course_workspace(metadata, course_name=course_name, url=url, workdir=workdir)
@@ -128,13 +142,17 @@ def generate_impl(
     write_json(subtitle_result.transcript_json_path, [segment.to_dict() for segment in transcripts])
 
     video_path = _load_or_download_video(url, workdir)
-    scenes = SceneDetectorService().detect(
-        video_path,
-        scene_threshold,
-        min_segment_seconds,
-        edge_weight=scene_edge_weight,
-        stats_csv_path=workdir / "scene_stats.csv",
-    )
+    if scene_mode == "hybrid":
+        scenes = _detect_hybrid_slides(
+            video_path, workdir, scene_threshold=scene_threshold, scene_edge_weight=scene_edge_weight,
+            vision_backend=vision_backend, vision_scan_interval=vision_scan_interval,
+            vision_timeout_seconds=vision_timeout_seconds,
+        )
+    else:
+        scenes = SceneDetectorService().detect(
+            video_path, scene_threshold, min_segment_seconds, edge_weight=scene_edge_weight,
+            stats_csv_path=workdir / "scene_stats.csv",
+        )
     write_json(workdir / "scenes.json", scenes)
     FrameSampler().sample_for_scenes(video_path, workdir / "frames", scenes, sample_interval)
 
@@ -190,6 +208,72 @@ def generate_impl(
         typer.echo(message)
     else:
         print(message)
+
+
+def _validate_slide_options(
+    scene_mode: str, vision_backend: str | None, scan_interval: float, timeout_seconds: int | None,
+) -> None:
+    if scene_mode not in {"algorithm", "hybrid"}:
+        raise ValueError("--scene-mode must be algorithm or hybrid.")
+    if not math.isfinite(scan_interval) or scan_interval <= 0:
+        raise ValueError("--vision-scan-interval must be finite and greater than zero.")
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError("--vision-timeout-seconds must be greater than zero.")
+    if scene_mode == "hybrid":
+        OpenAICompatibleClient().resolve_vision_config(vision_backend, timeout_seconds)
+
+
+def _detect_hybrid_slides(
+    video_path: Path, workdir: Path, *, scene_threshold: float, scene_edge_weight: float,
+    vision_backend: str | None, vision_scan_interval: float, vision_timeout_seconds: int | None,
+) -> list[dict[str, float]]:
+    analysis_dir = workdir / "slide_analysis"
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    candidates = SceneDetectorService().detect(
+        video_path, scene_threshold, 1, edge_weight=scene_edge_weight,
+        stats_csv_path=analysis_dir / "scene_stats.csv",
+    )
+    write_json(analysis_dir / "candidate_scenes.json", candidates)
+    print("Hybrid mode: checking candidate cuts and periodic samples with the vision model.", flush=True)
+    scenes = HybridSlideDetector().detect(
+        video_path, candidates, analysis_dir, backend=vision_backend,
+        scan_interval=vision_scan_interval, timeout_seconds=vision_timeout_seconds,
+    )
+    write_json(analysis_dir / "scenes.json", scenes)
+    print(f"Slide analysis: {len(scenes)} segments; review {analysis_dir / 'slide_review.json'}", flush=True)
+    return scenes
+
+
+def detect_slides_impl(
+    course_name: str, workdir: Path = Path("workdir"), vision_backend: str | None = None,
+    vision_scan_interval: float = 5.0, vision_timeout_seconds: int | None = None,
+    scene_threshold: float = 15.0, scene_edge_weight: float = 0.3,
+) -> None:
+    """Preview slide segmentation from a cached video without replacing course notes."""
+    _validate_slide_options("hybrid", vision_backend, vision_scan_interval, vision_timeout_seconds)
+    # Avoid creating a course workspace when the required cached video is absent.
+    course_dir = workdir / sanitize_course_name(course_name)
+    video_path = course_dir / "video.mp4"
+    if not video_path.is_file():
+        raise FileNotFoundError(f"detect-slides requires an existing course video: {video_path}")
+    scenes = _detect_hybrid_slides(
+        video_path, course_dir, scene_threshold=scene_threshold, scene_edge_weight=scene_edge_weight,
+        vision_backend=vision_backend, vision_scan_interval=vision_scan_interval,
+        vision_timeout_seconds=vision_timeout_seconds,
+    )
+    preview_dir = course_dir / "slide_preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    FrameSampler().sample_for_scenes(video_path, preview_dir / "frames", scenes, 1.0)
+    write_json(preview_dir / "scenes.json", scenes)
+    lines = ["# 簡報分段預覽", "", "疑似切點與無法確認的位置請見 ../slide_analysis/slide_review.json。", ""]
+    for index, scene in enumerate(scenes, 1):
+        lines.extend([
+            f"## {index}: {scene['start_sec']:.3f}–{scene['end_sec']:.3f} 秒", "",
+            f"截圖時間：{scene['capture_sec']:.3f} 秒" if "capture_sec" in scene else "未確認可讀簡報；使用區段尾端畫面供檢查。",
+            "", f"![簡報 {index}](frames/{scene_frame_filename(scene)})", "",
+        ])
+    (preview_dir / "preview.md").write_text("\n".join(lines), encoding="utf-8")
+    print(f"Slide preview written at {preview_dir / 'preview.md'}")
 
 
 def rewrite_notes_impl(
@@ -467,6 +551,10 @@ if HAS_TYPER:
         scene_threshold: float = typer.Option(27.0, help=GENERATE_HELP["scene_threshold"]),
         min_segment_seconds: int = typer.Option(20, help=GENERATE_HELP["min_segment_seconds"]),
         scene_edge_weight: float = typer.Option(0.0, help=GENERATE_HELP["scene_edge_weight"]),
+        scene_mode: str = typer.Option("algorithm", help=GENERATE_HELP["scene_mode"]),
+        vision_backend: str | None = typer.Option(None, help=GENERATE_HELP["vision_backend"]),
+        vision_scan_interval: float = typer.Option(5.0, help=GENERATE_HELP["vision_scan_interval"]),
+        vision_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["vision_timeout_seconds"]),
         llm_backend: str | None = typer.Option(None, help=GENERATE_HELP["llm_backend"]),
         llm_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["llm_timeout_seconds"]),
         note_style: str = typer.Option("summary", help=GENERATE_HELP["note_style"]),
@@ -487,6 +575,10 @@ if HAS_TYPER:
             scene_threshold=scene_threshold,
             min_segment_seconds=min_segment_seconds,
             scene_edge_weight=scene_edge_weight,
+            scene_mode=scene_mode,
+            vision_backend=vision_backend,
+            vision_scan_interval=vision_scan_interval,
+            vision_timeout_seconds=vision_timeout_seconds,
             llm_backend=llm_backend,
             llm_timeout_seconds=llm_timeout_seconds,
             note_style=note_style,
@@ -498,6 +590,23 @@ if HAS_TYPER:
             whisper_model=whisper_model,
             whisper_device=whisper_device,
             workdir=workdir,
+        )
+
+    @app.command("detect-slides")
+    def detect_slides(
+        course_name: str = typer.Option(..., help=GENERATE_HELP["course_name"]),
+        workdir: Path = typer.Option(Path("workdir"), help=GENERATE_HELP["workdir"]),
+        vision_backend: str | None = typer.Option(None, help=GENERATE_HELP["vision_backend"]),
+        vision_scan_interval: float = typer.Option(5.0, help=GENERATE_HELP["vision_scan_interval"]),
+        vision_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["vision_timeout_seconds"]),
+        scene_threshold: float = typer.Option(15.0, help=GENERATE_HELP["scene_threshold"]),
+        scene_edge_weight: float = typer.Option(0.3, help=GENERATE_HELP["scene_edge_weight"]),
+    ) -> None:
+        """Preview slide pages in a cached video, without rewriting notes."""
+        detect_slides_impl(
+            course_name=course_name, workdir=workdir, vision_backend=vision_backend,
+            vision_scan_interval=vision_scan_interval, vision_timeout_seconds=vision_timeout_seconds,
+            scene_threshold=scene_threshold, scene_edge_weight=scene_edge_weight,
         )
 
     @app.command("rewrite-notes")
@@ -574,6 +683,10 @@ else:
         generate_parser.add_argument("--scene-threshold", type=float, default=27.0, help=GENERATE_HELP["scene_threshold"])
         generate_parser.add_argument("--min-segment-seconds", type=int, default=20, help=GENERATE_HELP["min_segment_seconds"])
         generate_parser.add_argument("--scene-edge-weight", type=float, default=0.0, help=GENERATE_HELP["scene_edge_weight"])
+        generate_parser.add_argument("--scene-mode", choices=("algorithm", "hybrid"), default="algorithm", help=GENERATE_HELP["scene_mode"])
+        generate_parser.add_argument("--vision-backend", help=GENERATE_HELP["vision_backend"])
+        generate_parser.add_argument("--vision-scan-interval", type=float, default=5.0, help=GENERATE_HELP["vision_scan_interval"])
+        generate_parser.add_argument("--vision-timeout-seconds", type=int, help=GENERATE_HELP["vision_timeout_seconds"])
         generate_parser.add_argument("--llm-backend", help=GENERATE_HELP["llm_backend"])
         generate_parser.add_argument("--llm-timeout-seconds", type=int, help=GENERATE_HELP["llm_timeout_seconds"])
         generate_parser.add_argument("--note-style", default="summary", help=GENERATE_HELP["note_style"])
@@ -585,6 +698,14 @@ else:
         generate_parser.add_argument("--whisper-model", default="small", help=GENERATE_HELP["whisper_model"])
         generate_parser.add_argument("--whisper-device", default="auto", help=GENERATE_HELP["whisper_device"])
         generate_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
+        slides_parser = subparsers.add_parser("detect-slides", help="Preview slide pages from a cached course video.")
+        slides_parser.add_argument("--course-name", required=True, help=GENERATE_HELP["course_name"])
+        slides_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
+        slides_parser.add_argument("--vision-backend", help=GENERATE_HELP["vision_backend"])
+        slides_parser.add_argument("--vision-scan-interval", type=float, default=5.0, help=GENERATE_HELP["vision_scan_interval"])
+        slides_parser.add_argument("--vision-timeout-seconds", type=int, help=GENERATE_HELP["vision_timeout_seconds"])
+        slides_parser.add_argument("--scene-threshold", type=float, default=15.0, help=GENERATE_HELP["scene_threshold"])
+        slides_parser.add_argument("--scene-edge-weight", type=float, default=0.3, help=GENERATE_HELP["scene_edge_weight"])
         download_subtitles_parser = subparsers.add_parser("download-subtitles", help="Download and parse subtitles only.")
         download_subtitles_parser.add_argument("url", help=DOWNLOAD_SUBTITLES_HELP["url"])
         download_subtitles_parser.add_argument("--course-name", required=True, help=DOWNLOAD_SUBTITLES_HELP["course_name"])
@@ -625,6 +746,10 @@ else:
                 scene_threshold=args.scene_threshold,
                 min_segment_seconds=args.min_segment_seconds,
                 scene_edge_weight=args.scene_edge_weight,
+                scene_mode=args.scene_mode,
+                vision_backend=args.vision_backend,
+                vision_scan_interval=args.vision_scan_interval,
+                vision_timeout_seconds=args.vision_timeout_seconds,
                 llm_backend=args.llm_backend,
                 llm_timeout_seconds=args.llm_timeout_seconds,
                 note_style=args.note_style,
@@ -636,6 +761,12 @@ else:
                 whisper_model=args.whisper_model,
                 whisper_device=args.whisper_device,
                 workdir=args.workdir,
+            )
+        if args.command == "detect-slides":
+            detect_slides_impl(
+                course_name=args.course_name, workdir=args.workdir, vision_backend=args.vision_backend,
+                vision_scan_interval=args.vision_scan_interval, vision_timeout_seconds=args.vision_timeout_seconds,
+                scene_threshold=args.scene_threshold, scene_edge_weight=args.scene_edge_weight,
             )
         if args.command == "download-subtitles":
             download_subtitles_impl(

@@ -65,6 +65,7 @@ def test_frame_sampler_uses_utf8_text_mode(monkeypatch, tmp_path: Path) -> None:
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         recorded["command"] = command
         recorded["kwargs"] = kwargs
+        Path(command[-1]).write_bytes(b"frame")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
