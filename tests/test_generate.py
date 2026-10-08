@@ -202,7 +202,7 @@ def test_download_subtitles_impl_writes_subtitle_transcript_and_metadata(
         def summarize_segments(self, *args, **kwargs):
             raise AssertionError("LLM should not run when only downloading subtitles")
 
-    monkeypatch.setattr(cli_main, "YouTubeSubtitleDownloader", lambda: _FakeSubtitleDownloader())
+    monkeypatch.setattr(cli_main, "YouTubeSubtitleDownloader", lambda **kwargs: _FakeSubtitleDownloader())
     monkeypatch.setattr(cli_main, "VideoDownloader", lambda: _FailingVideoDownloader())
     monkeypatch.setattr(cli_main, "LLMService", lambda: _FailingLLMService())
 

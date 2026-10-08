@@ -115,7 +115,10 @@ def test_generate_subcommand_rejects_removed_model_option() -> None:
     )
 
     assert result.exit_code != 0
-    assert "No such option: --model" in result.output
+    assert any(
+        message in result.output
+        for message in ("No such option: --model", "No such option '--model'")
+    )
 
 
 def test_generate_subcommand_requires_course_name() -> None:

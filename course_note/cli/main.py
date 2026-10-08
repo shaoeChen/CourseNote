@@ -49,6 +49,9 @@ GENERATE_HELP = {
     "with_key_terms": "Extract key terms for the whole course.",
     "include_extra_notes": "Allow the LLM to emit an extra notes section when needed.",
     "include_transcript": "Include the original transcript text in each segment of the rendered Markdown.",
+    "transcribe_fallback": "When the video has no native or auto subtitles, download audio and transcribe it with faster-whisper to generate timestamped subtitles.",
+    "whisper_model": "faster-whisper model name used by --transcribe-fallback, for example small, medium, or large-v3.",
+    "whisper_device": "faster-whisper device: auto (CUDA if available), cuda, or cpu.",
     "workdir": "Base working directory that stores per-course subfolders and intermediate artifacts.",
 }
 
@@ -97,6 +100,9 @@ def generate_impl(
     with_key_terms: bool = False,
     include_extra_notes: bool = False,
     include_transcript: bool = False,
+    transcribe_fallback: bool = False,
+    whisper_model: str = "small",
+    whisper_device: str = "auto",
     workdir: Path = Path("workdir"),
 ) -> None:
     workdir = resolve_course_workdir(workdir, course_name)
@@ -109,6 +115,9 @@ def generate_impl(
         subtitle_lang=subtitle_lang,
         course_name=course_name,
         metadata=metadata,
+        transcribe_fallback=transcribe_fallback,
+        whisper_model=whisper_model,
+        whisper_device=whisper_device,
     )
 
     transcripts = SubtitleParser().parse_vtt(
@@ -249,6 +258,9 @@ def download_subtitles_impl(
     url: str,
     course_name: str,
     subtitle_lang: str = "zh-TW",
+    transcribe_fallback: bool = False,
+    whisper_model: str = "small",
+    whisper_device: str = "auto",
     workdir: Path = Path("workdir"),
 ) -> None:
     workdir = resolve_course_workdir(workdir, course_name)
@@ -261,6 +273,9 @@ def download_subtitles_impl(
         subtitle_lang=subtitle_lang,
         course_name=course_name,
         metadata=metadata,
+        transcribe_fallback=transcribe_fallback,
+        whisper_model=whisper_model,
+        whisper_device=whisper_device,
     )
     transcripts = SubtitleParser().parse_vtt(
         subtitle_result.subtitle_path,
@@ -320,11 +335,18 @@ def _load_or_download_subtitles(
     subtitle_lang: str,
     course_name: str,
     metadata: CourseWorkspaceMetadata | None,
+    transcribe_fallback: bool = False,
+    whisper_model: str = "small",
+    whisper_device: str = "auto",
 ) -> SubtitleDownloadResult:
     subtitle_path = workdir / "subtitles.vtt"
     if subtitle_path.exists() and _can_reuse_subtitles(metadata, subtitle_lang):
         return _build_cached_subtitle_result(workdir, subtitle_lang, course_name, metadata)
-    subtitle_downloader = YouTubeSubtitleDownloader()
+    subtitle_downloader = YouTubeSubtitleDownloader(
+        transcribe_fallback=transcribe_fallback,
+        whisper_model=whisper_model,
+        whisper_device=whisper_device,
+    )
     return subtitle_downloader.download(url, workdir, subtitle_lang)
 
 
@@ -452,6 +474,9 @@ if HAS_TYPER:
         with_key_terms: bool = typer.Option(False, help=GENERATE_HELP["with_key_terms"]),
         include_extra_notes: bool = typer.Option(False, help=GENERATE_HELP["include_extra_notes"]),
         include_transcript: bool = typer.Option(False, help=GENERATE_HELP["include_transcript"]),
+        transcribe_fallback: bool = typer.Option(False, help=GENERATE_HELP["transcribe_fallback"]),
+        whisper_model: str = typer.Option("small", help=GENERATE_HELP["whisper_model"]),
+        whisper_device: str = typer.Option("auto", help=GENERATE_HELP["whisper_device"]),
         workdir: Path = typer.Option(Path("workdir"), help=GENERATE_HELP["workdir"]),
     ) -> None:
         generate_impl(
@@ -469,6 +494,9 @@ if HAS_TYPER:
             with_key_terms=with_key_terms,
             include_extra_notes=include_extra_notes,
             include_transcript=include_transcript,
+            transcribe_fallback=transcribe_fallback,
+            whisper_model=whisper_model,
+            whisper_device=whisper_device,
             workdir=workdir,
         )
 
@@ -507,12 +535,18 @@ if HAS_TYPER:
         url: str = typer.Argument(..., help=DOWNLOAD_SUBTITLES_HELP["url"]),
         course_name: str = typer.Option(..., help=DOWNLOAD_SUBTITLES_HELP["course_name"]),
         subtitle_lang: str = typer.Option("zh-TW", help=DOWNLOAD_SUBTITLES_HELP["subtitle_lang"]),
+        transcribe_fallback: bool = typer.Option(False, help=GENERATE_HELP["transcribe_fallback"]),
+        whisper_model: str = typer.Option("small", help=GENERATE_HELP["whisper_model"]),
+        whisper_device: str = typer.Option("auto", help=GENERATE_HELP["whisper_device"]),
         workdir: Path = typer.Option(Path("workdir"), help=DOWNLOAD_SUBTITLES_HELP["workdir"]),
     ) -> None:
         download_subtitles_impl(
             url=url,
             course_name=course_name,
             subtitle_lang=subtitle_lang,
+            transcribe_fallback=transcribe_fallback,
+            whisper_model=whisper_model,
+            whisper_device=whisper_device,
             workdir=workdir,
         )
 
@@ -547,11 +581,17 @@ else:
         generate_parser.add_argument("--with-key-terms", action="store_true", help=GENERATE_HELP["with_key_terms"])
         generate_parser.add_argument("--include-extra-notes", action="store_true", help=GENERATE_HELP["include_extra_notes"])
         generate_parser.add_argument("--include-transcript", action="store_true", help=GENERATE_HELP["include_transcript"])
+        generate_parser.add_argument("--transcribe-fallback", action="store_true", help=GENERATE_HELP["transcribe_fallback"])
+        generate_parser.add_argument("--whisper-model", default="small", help=GENERATE_HELP["whisper_model"])
+        generate_parser.add_argument("--whisper-device", default="auto", help=GENERATE_HELP["whisper_device"])
         generate_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
         download_subtitles_parser = subparsers.add_parser("download-subtitles", help="Download and parse subtitles only.")
         download_subtitles_parser.add_argument("url", help=DOWNLOAD_SUBTITLES_HELP["url"])
         download_subtitles_parser.add_argument("--course-name", required=True, help=DOWNLOAD_SUBTITLES_HELP["course_name"])
         download_subtitles_parser.add_argument("--subtitle-lang", default="zh-TW", help=DOWNLOAD_SUBTITLES_HELP["subtitle_lang"])
+        download_subtitles_parser.add_argument("--transcribe-fallback", action="store_true", help=GENERATE_HELP["transcribe_fallback"])
+        download_subtitles_parser.add_argument("--whisper-model", default="small", help=GENERATE_HELP["whisper_model"])
+        download_subtitles_parser.add_argument("--whisper-device", default="auto", help=GENERATE_HELP["whisper_device"])
         download_subtitles_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=DOWNLOAD_SUBTITLES_HELP["workdir"])
         rewrite_parser = subparsers.add_parser("rewrite-notes", help="Reuse existing segments and only regenerate note content.")
         rewrite_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=REWRITE_HELP["workdir"])
@@ -592,6 +632,9 @@ else:
                 with_key_terms=args.with_key_terms,
                 include_extra_notes=args.include_extra_notes,
                 include_transcript=args.include_transcript,
+                transcribe_fallback=args.transcribe_fallback,
+                whisper_model=args.whisper_model,
+                whisper_device=args.whisper_device,
                 workdir=args.workdir,
             )
         if args.command == "download-subtitles":
@@ -599,6 +642,9 @@ else:
                 url=args.url,
                 course_name=args.course_name,
                 subtitle_lang=args.subtitle_lang,
+                transcribe_fallback=args.transcribe_fallback,
+                whisper_model=args.whisper_model,
+                whisper_device=args.whisper_device,
                 workdir=args.workdir,
             )
         if args.command == "rewrite-notes":
