@@ -166,6 +166,7 @@ def generate_impl(
     write_json(workdir / "segments.json", [segment.to_dict() for segment in segments])
 
     llm_service = LLMService()
+    llm_service.log_path = workdir / 'text_generation.log'
     summarize_kwargs: dict[str, Any] = {}
     if llm_timeout_seconds is not None:
         summarize_kwargs["timeout_seconds"] = llm_timeout_seconds
@@ -433,6 +434,7 @@ def rewrite_notes_impl(
     resolved_title, resolved_url = _resolve_note_metadata(source_note, title=title, url=url)
 
     llm_service = LLMService()
+    llm_service.log_path = workdir / 'text_generation.log'
     summarize_kwargs: dict[str, Any] = {}
     if llm_timeout_seconds is not None:
         summarize_kwargs["timeout_seconds"] = llm_timeout_seconds

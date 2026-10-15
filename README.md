@@ -46,6 +46,7 @@ course-note detect-slides `
 
 `reviewed` 直接套用已完成的 `slide_analysis/slide_review.json`，保留修正後的時間線與已選擇截圖時間；不呼叫視覺模型，也不重新跑場景演算法。報告必須完整、分段連續且覆蓋原影片時間線。接著重新產生文字筆記與可選的關鍵詞，這些文字模型請求仍會計費，產出會覆寫課程目錄的 `article.md`、`segments.json`、`scenes.json` 和 `frames/`。`hybrid` 則用於需要重新切段及審查的情境。
 
+`generate` 與 `rewrite-notes` 的文字生成會逐段顯示 `[TEXT_SEGMENT]`、請求數、耗時、完成結果與 API 提供的 token 用量；等待回覆時每 10 秒顯示 `[TEXT_WAIT]`。課程總結、關鍵詞與錯誤也會記錄，日誌同步追加到課程目錄的 `text_generation.log`。日誌不包含完整字幕、提示、筆記內容或金鑰，不會自動重試失敗請求。已經啟動的舊程序不會載入後來修改的日誌程式。
 
 `generate` 的 Hybrid 保留 `--scene-threshold`、`--scene-edge-weight`、`--min-segment-seconds` 的演算法分段，再按段審查。`detect-slides` 有現成時間線時不重新切段，這些參數僅用於缺少時間線時。`--sample-interval` 用於沒有確認可讀簡報的區段；其餘採用模型選出的截圖時間。截圖檔名包含區段結束時間的毫秒值，避免短區段覆蓋同名圖片。恰好在分界開始的字幕歸下一段。
 
