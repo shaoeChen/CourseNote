@@ -1,52 +1,57 @@
 # CourseNote
 
+
 ### 簡報辨識模式（hybrid）
 
 對於教室鏡頭與全螢幕簡報交替的影片，可以啟用 `--scene-mode hybrid`。原本的 `algorithm` 模式仍是預設。
 
-Hybrid 先用現有演算法找候選切點，再加入定時取樣，由視覺語言模型比較簡報內容。相同簡報的鏡頭切換與逐步揭露內容不另切段；確認新頁後，在前後取樣間細查換頁位置（目標範圍 0.5 秒）。截圖從每段已確認的可讀簡報中挑選，優先模型評分較高的畫面，同分取較晚的畫面。
+Hybrid 以演算法時間線為基礎，模型每段一次審查字幕、段首／中間／段尾三張畫面、相鄰字幕與既有筆記。可用時附上一段已確認可讀的簡報作為比較。審查會指出文不對題、同頁鏡頭切換、段內多頁及畫面先於講述換頁等問題。只合併高信心的同一頁鏡頭切換；同議題的不同頁仍保留。
 
 圖片擷取需要 OpenCV，可用 `pip install -e ".[vision]"` 或 `uv sync --extra vision` 安裝。模型服務需另外啟動；這項安裝不會下載視覺模型。
 
-請先在 `.env` 設定**支援多張圖片輸入的視覺模型**。`vllm` 是服務後端，模型本身必須具備圖片理解能力；現有寫筆記的模型仍由原本的 `COURSE_NOTE_PROVIDER` 等設定控制。
+在 `.env` 用 `COURSE_NOTE_VISION_PROVIDER` 指向已配置好的供應商，程式會直接沿用該供應商的模型、API 位址與金鑰。該模型與服務需支援多張圖片輸入。
 
 ```dotenv
 COURSE_NOTE_VISION_PROVIDER=vllm
-COURSE_NOTE_VISION_MODEL=your-vision-model
-COURSE_NOTE_VISION_API_BASE=http://127.0.0.1:8000/v1
-COURSE_NOTE_VISION_API_KEY=EMPTY
-COURSE_NOTE_VISION_TIMEOUT_SECONDS=120
 ```
 
-`your-vision-model` 請換成服務端實際載入的模型 ID。也可使用 `ollama`、`llama.cpp` 等相容 API 後端；只有該模型與服務支援圖片時才能使用。未設定 `COURSE_NOTE_VISION_MODEL` 會提前報錯，程式不會自動改用文字模型。視覺連線設定省略時沿用所選後端的連線設定；視覺模型名稱與逾時設定獨立。
+例如指定 `vllm`，就使用既有的 `COURSE_NOTE_VLLM_MODEL`、`COURSE_NOTE_VLLM_API_BASE`（或 HOST／PORT）與 `COURSE_NOTE_VLLM_API_KEY`；指定 `ollama` 則沿用 Ollama 的設定。無須再設定 `COURSE_NOTE_VISION_MODEL`、`COURSE_NOTE_VISION_API_BASE` 或 `COURSE_NOTE_VISION_API_KEY`。未指定視覺供應商時，沿用 `COURSE_NOTE_PROVIDER`；模型與連線的 fallback 規則也和寫筆記相同。
 
-對已下載影片的課程，先執行預覽，不需字幕或文字 LLM，也不會覆寫 `article.md`、`segments.json`、原本的 `frames/`：
+逾時沿用 `COURSE_NOTE_LLM_TIMEOUT_SECONDS`，需要單次覆寫時才傳 `--vision-timeout-seconds`。`--vision-backend` 也僅作為單次供應商覆寫，平常不需傳入。
+
+對已下載影片與字幕的課程，先執行預覽。會讀取 `subtitles.vtt`（或 `transcript.json`）及既有 `segments.json` 的筆記，沿用 `scenes.json` 的時間線；沒有時間線時才用演算法建立。預覽不會覆寫 `article.md`、`segments.json`、原本的 `frames/`：
 
 ```powershell
 course-note detect-slides `
   --course-name "Stanford CS329A Self-Improving AI Agents | Part 1 | Course Overview" `
-  --vision-backend vllm `
   --scene-threshold 15 `
   --scene-edge-weight 0.3 `
-  --vision-scan-interval 5 `
+  --min-segment-seconds 20 `
   --workdir workdir
 ```
 
 預覽輸出為 `workdir/<課程名稱>/slide_preview/preview.md` 及 `frames/`。判斷依據、低信心結果與待檢查範圍保存在 `slide_analysis/slide_review.json`；候選切點與統計也保留在該目錄。
 
+審查會即時顯示目前區段、時間範圍、圖片數、快取命中、累計模型請求、追加分析次數、耗時與結果；等待模型時每 10 秒更新一次。帶時間戳的日誌會追加到 `slide_analysis/review.log`，不記錄金鑰或完整提示。`requests` 是本次啟動的請求數，包含可能仍在等待的請求，並非費用估算。按 Ctrl+C 會把報告標記為中止並保留成功快取；已送出的請求仍可能計費。
+
+模型回覆格式不符時，停止分析並把原始回覆保存到 `slide_analysis/invalid_responses/`，報告標示失敗區段與檔案路徑。若已有分段成果，會另外輸出 `slide_preview/partial/partial_preview.md` 和截圖；部分預覽標示已涵蓋的範圍，不代表整部課程已完成。這個部分預覽只使用本機影片與既有成果，不會重送模型請求。
+
+使用 DeepSeek 官方 API 的圖片審查會關閉 thinking、要求 JSON 回覆，並限制輸出為 2048 tokens。這避免短審查沿用服務端較大的預設推理額度；文字筆記與其他供應商維持既有請求設定。既有合法審查快取仍可沿用。成功回覆有提供 token 用量時，日誌會印出 `[USAGE]`；最終答案為空時，保存完整 API 回覆並顯示結束原因，不自動重試，也不把 `reasoning_content` 當作審查結果。
+
 檢查預覽後，用原本的 `generate` 命令加入：
 
 ```powershell
-  --scene-mode hybrid `
-  --vision-backend vllm `
-  --vision-scan-interval 5
+  --scene-mode reviewed
 ```
 
-Hybrid 的候選切點使用一秒的最小間隔，**不套用 `--min-segment-seconds` 的最終切點合併**，避免短簡報被丟掉。`--sample-interval` 僅用於沒有確認可讀簡報的區段；其餘區段採用視覺模型選出的截圖時間。新截圖檔名包含區段結束時間的毫秒值，避免短區段覆蓋同名圖片。兩個模式都依字幕與區段實際重疊配對，恰好在分界開始的字幕歸下一段。
+`reviewed` 直接套用已完成的 `slide_analysis/slide_review.json`，保留修正後的時間線與已選擇截圖時間；不呼叫視覺模型，也不重新跑場景演算法。報告必須完整、分段連續且覆蓋原影片時間線。接著重新產生文字筆記與可選的關鍵詞，這些文字模型請求仍會計費，產出會覆寫課程目錄的 `article.md`、`segments.json`、`scenes.json` 和 `frames/`。`hybrid` 則用於需要重新切段及審查的情境。
 
-`--vision-scan-interval` 越小，越有機會找到短暫出現的頁面，也會增加請求量；約 70 分鐘影片以五秒取樣，定時取樣就約有 840 次，另有候選切點與細查請求。`vision_cache.json` 以模型、API 位址、提示與圖片內容識別結果，每次成功判斷後保存；重跑預覽與 generate 可重用同一份分析快取。
 
-模型無法確認、簡報被遮擋或低於信心門檻時，程式會留下待檢查範圍；這些情況不代表已確認「同一頁」。可讀畫面之間的切點仍可能只是推估，請依報告檢查。取樣間出現又消失的短頁面，以及講者鏡頭完全遮住的換頁，也可能無法還原。API 失敗或模型輸出不符合結構會停止分析並保留已完成的快取，不會偷偷退回純演算法模式。
+`generate` 的 Hybrid 保留 `--scene-threshold`、`--scene-edge-weight`、`--min-segment-seconds` 的演算法分段，再按段審查。`detect-slides` 有現成時間線時不重新切段，這些參數僅用於缺少時間線時。`--sample-interval` 用於沒有確認可讀簡報的區段；其餘採用模型選出的截圖時間。截圖檔名包含區段結束時間的毫秒值，避免短區段覆蓋同名圖片。恰好在分界開始的字幕歸下一段。
+
+首次基礎審查最多每段一次請求，例如 79 段最多 79 次。僅有問題且需要局部分析的段落會追加一次五張圖的分析，**全片最多 10 次追加請求**；因此最多 89 次。這是請求數上限，實際費用仍依圖片與文字用量計算。已移除 `--vision-scan-interval`。`vision_cache.json` 按模型、API 位址、圖片、字幕、鄰段與既有筆記識別結果，成功後立即保存；相同輸入重跑可免重複請求，筆記或時間線變更則重新判斷。
+
+局部分析只有在高信心、證據有效、分段完整連續且各截圖位於對應段內時才套用。模型無法確認、追加額度用完或簡報被遮擋時，保留原邊界並標記待確認；不會因為同議題就合併。取樣間短暫出現的頁面仍可能漏掉，模型品質需以實際課程預覽檢查。API 失敗或回傳結構錯誤會停止分析，保留部分報告與成功快取。
 
 CourseNote 是一個本地端 CLI 工具，用來把 YouTube 課程影片整理成結構化 Markdown 筆記。
 

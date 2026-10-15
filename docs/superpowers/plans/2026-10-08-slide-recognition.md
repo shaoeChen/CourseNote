@@ -1,14 +1,16 @@
 # Slide recognition implementation plan
 
+> Historical implementation record. The periodic-scanning workflow below is superseded by [segment-based review](2026-10-08-segment-slide-review.md); the CLI now uses the approved bounded per-segment review.
+
 **Goal:** Add an opt-in hybrid slide detector that preserves existing generation behavior.
 
-**Architecture:** ContentDetector proposes cuts with a short candidate spacing. Periodic samples cover missed cuts. A separately configured vision model compares a last readable slide with subsequent frames, ignoring camera changes and progressive reveals. New pages trigger a bounded temporal refinement; uncertain comparisons go to a review report. A selected capture timestamp is carried through the existing frame and timeline pipeline.
+**Architecture:** ContentDetector proposes cuts with a short candidate spacing. Periodic samples cover missed cuts. The model of the selected vision provider compares a last readable slide with subsequent frames, ignoring camera changes and progressive reveals. New pages trigger a bounded temporal refinement; uncertain comparisons go to a review report. A selected capture timestamp is carried through the existing frame and timeline pipeline.
 
 **Tech stack:** Python dataclasses, existing OpenAI-compatible HTTP client, OpenCV JPEG extraction, pytest. No paid service or model download is required for tests.
 
 ## Task 1: Vision transport and configuration
-- [x] Add failing tests for separate vision settings, required explicit vision model, ordered local JPEG image inputs, and unchanged text chat.
-- [x] Implement `resolve_vision_config(backend=None, timeout_seconds=None)` and `chat_images(config, prompt, images)` in providers/openai_compatible.py. Use COURSE_NOTE_VISION_PROVIDER/MODEL/API_BASE/API_KEY/TIMEOUT_SECONDS; reuse selected provider connection defaults, never reuse its text model.
+- [x] Add failing tests for selecting an already configured provider, reusing its model and connection settings, ordered local JPEG image inputs, and unchanged text chat.
+- [x] Implement `resolve_vision_config(backend=None, timeout_seconds=None)` and `chat_images(config, prompt, images)` in providers/openai_compatible.py. Select with COURSE_NOTE_VISION_PROVIDER, falling back to COURSE_NOTE_PROVIDER. Reuse resolve_config for model, connection, key and shared timeout; no separate vision model/connection variables.
 - [x] Run `python -m pytest tests/test_openai_compatible.py tests/test_vision_client.py -q`.
 
 ## Task 2: Slide detector
@@ -21,7 +23,7 @@
 - [x] Add failing tests for Typer/argparse forwarding, early invalid-setting errors, selected timestamps, unique hybrid screenshot filenames, and default compatibility.
 - [x] Implement `--scene-mode algorithm|hybrid`, `--vision-backend`, `--vision-scan-interval` and `--vision-timeout-seconds`. In hybrid mode detect candidates with at most one-second minimum, then refine before writing final scenes/frames. User min-segment-seconds continues to apply to algorithm mode only. FrameSampler honors validated capture_sec; timeline resolves exactly matching hybrid frame names.
 - [x] Add `detect-slides --course-name ...` for cached video-only preview in slide_preview/ without altering article.md, segments.json or frames/. No text LLM call.
-- [x] Document separate .env settings, command examples, preview/review workflow, scan cost, visibility limitations and artifact meanings.
+- [x] Document the vision provider selector and reused .env settings, command examples, preview/review workflow, scan cost, visibility limitations and artifact meanings.
 - [x] Run full pytest, both CLI help/parser paths, diff checks, then independent spec/code review. Integrate the verified branch locally; no remote push.
 
 ## Acceptance
@@ -34,4 +36,4 @@ Default tests pass. Hybrid merges camera cuts, detects unseen candidate changes 
 - Synthetic 10 FPS / 29.97 FPS video exercised actual OpenCV JPEG extraction, HTTP image requests, temporal refinement, ffmpeg final screenshots, exact timeline filename resolution and fully cached reruns.
 - Real CS329A video samples at requested 244.411 and 304.605 seconds produced verified final images using decoded timestamps; original course files unchanged.
 - Independent review found low-FPS tail timestamp mismatch; fixed with persisted actual decoded timestamps, microsecond truncation and staged verified screenshots.
-- Real vision model quality not evaluated: current environment does not configure COURSE_NOTE_VISION_MODEL.
+- Real vision model quality was not evaluated in the initial implementation; provider configuration simplification does not change that validation scope.

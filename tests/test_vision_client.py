@@ -20,76 +20,75 @@ def clean_course_note_env(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name)
 
 
-def test_vision_defaults_are_independent_of_text_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("provider", list(OpenAICompatibleClient.DEFAULTS))
+def test_vision_reuses_selected_provider_configuration(monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
+    prefix = OpenAICompatibleClient.DEFAULTS[provider].env_prefix
     monkeypatch.setenv("COURSE_NOTE_PROVIDER", "ollama")
-    monkeypatch.setenv("COURSE_NOTE_MODEL", "text-model")
-    monkeypatch.setenv("COURSE_NOTE_VLLM_MODEL", "another-text-model")
-    monkeypatch.setenv("COURSE_NOTE_LLM_TIMEOUT_SECONDS", "invalid")
-    monkeypatch.setenv("COURSE_NOTE_VISION_MODEL", "vision-model")
+    monkeypatch.setenv("COURSE_NOTE_VISION_PROVIDER", provider)
+    monkeypatch.setenv(f"COURSE_NOTE_{prefix}_MODEL", "configured-model")
+    monkeypatch.setenv(f"COURSE_NOTE_{prefix}_API_BASE", "http://provider.test/v1")
+    monkeypatch.setenv(f"COURSE_NOTE_{prefix}_API_KEY", "provider-key")
+    monkeypatch.setenv("COURSE_NOTE_LLM_TIMEOUT_SECONDS", "240")
+    client = OpenAICompatibleClient()
 
-    config = OpenAICompatibleClient().resolve_vision_config()
-
-    assert config == ProviderConfig("vllm", "vision-model", "http://localhost:8000/v1", "EMPTY", 120)
-
-
-@pytest.mark.parametrize("model", [None, "", "   "])
-def test_vision_requires_an_explicit_model(monkeypatch: pytest.MonkeyPatch, model: str | None) -> None:
-    monkeypatch.setenv("COURSE_NOTE_MODEL", "text-model")
-    monkeypatch.setenv("COURSE_NOTE_VLLM_MODEL", "provider-text-model")
-    if model is not None:
-        monkeypatch.setenv("COURSE_NOTE_VISION_MODEL", model)
-
-    with pytest.raises(RuntimeError, match="COURSE_NOTE_VISION_MODEL"):
-        OpenAICompatibleClient().resolve_vision_config()
+    assert client.resolve_vision_config() == client.resolve_config(provider)
+    assert client.resolve_vision_config().model == "configured-model"
 
 
-def test_vision_provider_reuses_connection_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("provider", list(OpenAICompatibleClient.DEFAULTS))
+def test_vision_uses_existing_provider_model_defaults(monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
+    monkeypatch.setenv("COURSE_NOTE_VISION_PROVIDER", provider)
+    client = OpenAICompatibleClient()
+    assert client.resolve_vision_config() == client.resolve_config(provider)
+
+
+def test_vision_defaults_to_the_active_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COURSE_NOTE_PROVIDER", "ollama")
+    monkeypatch.setenv("COURSE_NOTE_OLLAMA_MODEL", "gemma-model")
+    client = OpenAICompatibleClient()
+    assert client.resolve_vision_config() == client.resolve_config(None)
+
+
+def test_vision_reuses_shared_model_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COURSE_NOTE_VISION_PROVIDER", "vllm")
+    monkeypatch.setenv("COURSE_NOTE_MODEL", "shared-model")
+    assert OpenAICompatibleClient().resolve_vision_config().model == "shared-model"
+
+
+def test_vision_provider_alias_reuses_model_and_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COURSE_NOTE_VISION_PROVIDER", "llamacpp")
-    monkeypatch.setenv("COURSE_NOTE_VISION_MODEL", "vision")
+    monkeypatch.setenv("COURSE_NOTE_LLAMACPP_MODEL", "vision")
     monkeypatch.setenv("COURSE_NOTE_LLAMACPP_HOST", "vision-host")
     monkeypatch.setenv("COURSE_NOTE_LLAMACPP_PORT", "8090")
     monkeypatch.setenv("COURSE_NOTE_LLAMACPP_API_KEY", "provider-key")
-
     config = OpenAICompatibleClient().resolve_vision_config()
-
-    assert config.backend == "llama.cpp"
-    assert config.api_base == "http://vision-host:8090/v1"
-    assert config.api_key == "provider-key"
+    assert config == ProviderConfig("llama.cpp", "vision", "http://vision-host:8090/v1", "provider-key", 120)
 
 
-def test_vision_overrides_connection_and_cli_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vision_cli_override_selects_the_other_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COURSE_NOTE_VISION_PROVIDER", "ollama")
-    monkeypatch.setenv("COURSE_NOTE_VISION_MODEL", "vision")
-    monkeypatch.setenv("COURSE_NOTE_VISION_API_BASE", "http://vision-host/v1")
-    monkeypatch.setenv("COURSE_NOTE_VISION_API_KEY", "vision-key")
-    monkeypatch.setenv("COURSE_NOTE_VISION_TIMEOUT_SECONDS", "250")
-
-    config = OpenAICompatibleClient().resolve_vision_config("deepseek-flash", 300)
-
-    assert config == ProviderConfig("deepseek", "vision", "http://vision-host/v1", "vision-key", 300)
-    assert OpenAICompatibleClient().resolve_vision_config().timeout_seconds == 250
+    monkeypatch.setenv("COURSE_NOTE_OLLAMA_MODEL", "ollama-model")
+    monkeypatch.setenv("COURSE_NOTE_DEEPSEEK_MODEL", "selected-model")
+    monkeypatch.setenv("COURSE_NOTE_LLM_TIMEOUT_SECONDS", "250")
+    client = OpenAICompatibleClient()
+    assert client.resolve_vision_config("deepseek-flash", 300) == client.resolve_config("deepseek", 300)
+    assert client.resolve_vision_config().timeout_seconds == 250
 
 
 @pytest.mark.parametrize("timeout", ["0", "-1", "bad", "1.5"])
-def test_vision_rejects_invalid_timeout(monkeypatch: pytest.MonkeyPatch, timeout: str) -> None:
-    monkeypatch.setenv("COURSE_NOTE_VISION_MODEL", "vision")
-    monkeypatch.setenv("COURSE_NOTE_VISION_TIMEOUT_SECONDS", timeout)
-
-    with pytest.raises(RuntimeError, match="COURSE_NOTE_VISION_TIMEOUT_SECONDS.*positive integer"):
+def test_vision_rejects_invalid_shared_timeout(monkeypatch: pytest.MonkeyPatch, timeout: str) -> None:
+    monkeypatch.setenv("COURSE_NOTE_LLM_TIMEOUT_SECONDS", timeout)
+    with pytest.raises(RuntimeError, match="COURSE_NOTE_LLM_TIMEOUT_SECONDS.*positive integer"):
         OpenAICompatibleClient().resolve_vision_config()
 
 
 @pytest.mark.parametrize("timeout", [0, -5, 1.5, True])
 def test_vision_rejects_invalid_cli_timeout(monkeypatch: pytest.MonkeyPatch, timeout: int | float) -> None:
-    monkeypatch.setenv("COURSE_NOTE_VISION_MODEL", "vision")
-
     with pytest.raises(RuntimeError, match="positive integer"):
         OpenAICompatibleClient().resolve_vision_config(timeout_seconds=timeout)  # type: ignore[arg-type]
 
 
 def test_vision_rejects_unsupported_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("COURSE_NOTE_VISION_MODEL", "vision")
-
     with pytest.raises(RuntimeError, match="Unsupported LLM backend"):
         OpenAICompatibleClient().resolve_vision_config("unsupported")
 
@@ -145,6 +144,37 @@ def test_text_chat_retains_string_content(monkeypatch: pytest.MonkeyPatch, confi
     assert payloads[0]["messages"] == [{"role": "user", "content": "hello"}]
 
 
+def test_official_deepseek_vision_requests_bounded_json_without_thinking(monkeypatch, tmp_path):
+    image = tmp_path / 'slide.jpg'
+    image.write_bytes(b'jpeg')
+    payloads = []
+
+    def intercept(request, **kwargs):
+        payloads.append(json.loads(request.data))
+        return io.BytesIO(b'{"choices":[{"message":{"content":"{}"}}]}')
+
+    monkeypatch.setattr(urllib.request, 'urlopen', intercept)
+    client = OpenAICompatibleClient()
+    cfg = ProviderConfig('deepseek', 'deepseek-flash', 'https://api.deepseek.com', 'key', 120)
+    client.chat_images(cfg, 'Return JSON', [image])
+    assert payloads[0]['thinking'] == {'type': 'disabled'}
+    assert payloads[0]['response_format'] == {'type': 'json_object'}
+    assert payloads[0]['max_tokens'] == 2048
+    client.chat(cfg, 'Write course notes')
+    assert 'thinking' not in payloads[1] and 'max_tokens' not in payloads[1]
+
+
+def test_empty_final_content_reports_finish_reason_and_preserves_complete_body(monkeypatch, config):
+    body = json.dumps({'choices': [{'finish_reason': 'length', 'message': {
+        'content': '', 'reasoning_content': 'private reasoning ' * 100}}],
+        'usage': {'completion_tokens': 2048, 'prompt_tokens': 200, 'total_tokens': 2248}})
+    monkeypatch.setattr(urllib.request, 'urlopen', lambda *args, **kwargs: io.BytesIO(body.encode()))
+    with pytest.raises(RuntimeError, match='finish_reason=length') as caught:
+        OpenAICompatibleClient().chat(config, 'hello')
+    assert caught.value.response_body == body
+    assert 'private reasoning' not in str(caught.value)
+
+
 @pytest.mark.parametrize("filename", ["missing.jpg", "slide.gif"])
 def test_chat_images_rejects_invalid_local_files_before_request(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: ProviderConfig, filename: str
@@ -190,7 +220,7 @@ def test_chat_reports_non_utf8_response(monkeypatch: pytest.MonkeyPatch, config:
 
 
 @pytest.mark.parametrize("error, message", [
-    (TimeoutError("timed out"), "timed out after 180 seconds"),
+    (TimeoutError("timed out"), "--vision-timeout-seconds / COURSE_NOTE_LLM_TIMEOUT_SECONDS"),
     (urllib.error.URLError("offline"), "Failed to reach"),
     (urllib.error.HTTPError("http://vision.test", 400, "bad", {}, io.BytesIO(b"invalid image")), "status 400: invalid image"),
 ])

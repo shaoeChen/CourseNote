@@ -9,11 +9,11 @@ from typing import Any
 
 from course_note.hackmd import HackMDPublisher
 from course_note.llm.service import LLMService
-from course_note.models import CourseNote, SlideSegment
+from course_note.models import CourseNote, SlideSegment, TranscriptSegment
 from course_note.providers.openai_compatible import OpenAICompatibleClient
 from course_note.renderers.markdown import MarkdownRenderer
 from course_note.segmentation.scenes import SceneDetectorService
-from course_note.segmentation.slides import HybridSlideDetector
+from course_note.segmentation.segment_review import SegmentSlideReviewer
 from course_note.segmentation.timeline import SegmentBuilder
 from course_note.subtitle.downloader import SubtitleDownloadResult, YouTubeSubtitleDownloader
 from course_note.subtitle.parser import SubtitleParser
@@ -47,10 +47,9 @@ GENERATE_HELP = {
     "scene_threshold": "PySceneDetect content threshold. Lower values split scenes more aggressively, higher values require larger visual changes.",
     "min_segment_seconds": "Minimum allowed scene duration in seconds. Scene cuts closer than this are merged to avoid overly short segments.",
     "scene_edge_weight": "Extra weight for edge changes during scene detection; useful when slides change layout but colors stay similar.",
-    "scene_mode": "algorithm (default) detects visual cuts; hybrid uses a separately configured vision model to detect slide pages. Hybrid uses one-second candidate spacing and ignores --min-segment-seconds.",
-    "vision_backend": "Vision backend override; defaults to COURSE_NOTE_VISION_PROVIDER or vllm. Requires COURSE_NOTE_VISION_MODEL.",
-    "vision_scan_interval": "Periodic vision sampling interval in seconds (default 5). Smaller values find shorter slides and increase model requests.",
-    "vision_timeout_seconds": "Vision request timeout; defaults to COURSE_NOTE_VISION_TIMEOUT_SECONDS or 120.",
+    "scene_mode": "algorithm (default) detects visual cuts; hybrid reviews algorithm segments with the vision model; reviewed applies a completed slide_analysis/slide_review.json without scene detection or vision requests.",
+    "vision_backend": "Optional provider override for slide recognition; defaults to COURSE_NOTE_VISION_PROVIDER, then COURSE_NOTE_PROVIDER. Reuses the provider's existing model and connection settings.",
+    "vision_timeout_seconds": "Optional vision request timeout override; defaults to COURSE_NOTE_LLM_TIMEOUT_SECONDS or 120.",
     "llm_backend": "LLM backend name, such as ollama, vllm, llama.cpp, zai, deepseek, or clinepass. If omitted, use COURSE_NOTE_PROVIDER or the built-in default.",
     "llm_timeout_seconds": "LLM request timeout in seconds. Increase this for slower local models such as larger Ollama models.",
     "note_style": "Prompt template name, such as summary, study_notes, structured, or near_transcript.",
@@ -115,13 +114,14 @@ def generate_impl(
     workdir: Path = Path("workdir"),
     scene_mode: str = "algorithm",
     vision_backend: str | None = None,
-    vision_scan_interval: float = 5.0,
     vision_timeout_seconds: int | None = None,
 ) -> None:
-    _validate_slide_options(scene_mode, vision_backend, vision_scan_interval, vision_timeout_seconds)
+    _validate_slide_options(scene_mode, vision_backend, vision_timeout_seconds)
     workdir = resolve_course_workdir(workdir, course_name)
     metadata = load_course_workspace_metadata(workdir)
     _validate_course_workspace(metadata, course_name=course_name, url=url, workdir=workdir)
+
+    reviewed_scenes = _load_reviewed_scenes(workdir) if scene_mode == 'reviewed' else None
 
     subtitle_result = _load_or_download_subtitles(
         url=url,
@@ -142,11 +142,15 @@ def generate_impl(
     write_json(subtitle_result.transcript_json_path, [segment.to_dict() for segment in transcripts])
 
     video_path = _load_or_download_video(url, workdir)
-    if scene_mode == "hybrid":
+    if scene_mode == 'reviewed':
+        assert reviewed_scenes is not None
+        scenes = reviewed_scenes
+        print(f'Using {len(scenes)} completed reviewed segments; vision requests=0. Text note generation will call the configured LLM.', flush=True)
+    elif scene_mode == "hybrid":
         scenes = _detect_hybrid_slides(
             video_path, workdir, scene_threshold=scene_threshold, scene_edge_weight=scene_edge_weight,
-            vision_backend=vision_backend, vision_scan_interval=vision_scan_interval,
-            vision_timeout_seconds=vision_timeout_seconds,
+            vision_backend=vision_backend, vision_timeout_seconds=vision_timeout_seconds,
+            min_segment_seconds=min_segment_seconds, transcripts=transcripts,
         )
     else:
         scenes = SceneDetectorService().detect(
@@ -154,8 +158,10 @@ def generate_impl(
             stats_csv_path=workdir / "scene_stats.csv",
         )
     write_json(workdir / "scenes.json", scenes)
+    print(f'Sampling {len(scenes)} representative frames for article generation.', flush=True)
     FrameSampler().sample_for_scenes(video_path, workdir / "frames", scenes, sample_interval)
 
+    print('Building subtitle-aligned article segments.', flush=True)
     segments = SegmentBuilder().build(scenes, transcripts, workdir / "frames")
     write_json(workdir / "segments.json", [segment.to_dict() for segment in segments])
 
@@ -211,69 +217,198 @@ def generate_impl(
 
 
 def _validate_slide_options(
-    scene_mode: str, vision_backend: str | None, scan_interval: float, timeout_seconds: int | None,
+    scene_mode: str, vision_backend: str | None, timeout_seconds: int | None,
 ) -> None:
-    if scene_mode not in {"algorithm", "hybrid"}:
-        raise ValueError("--scene-mode must be algorithm or hybrid.")
-    if not math.isfinite(scan_interval) or scan_interval <= 0:
-        raise ValueError("--vision-scan-interval must be finite and greater than zero.")
+    if scene_mode not in {"algorithm", "hybrid", "reviewed"}:
+        raise ValueError("--scene-mode must be algorithm, hybrid or reviewed.")
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("--vision-timeout-seconds must be greater than zero.")
     if scene_mode == "hybrid":
         OpenAICompatibleClient().resolve_vision_config(vision_backend, timeout_seconds)
 
 
+def _load_reviewed_scenes(workdir: Path) -> list[dict[str, float]]:
+    path = workdir / 'slide_analysis' / 'slide_review.json'
+    if not path.is_file():
+        raise FileNotFoundError(f'--scene-mode reviewed requires a completed detect-slides report: {path}')
+    report = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(report, dict) or report.get('status') != 'complete':
+        raise ValueError('Cannot apply an incomplete slide review; finish detect-slides first.')
+
+    def timeline(raw: Any) -> list[dict[str, float]]:
+        if not isinstance(raw, list) or not raw:
+            raise ValueError('Reviewed timelines must be nonempty lists.')
+        result = []
+        previous_end = None
+        for scene in raw:
+            if not isinstance(scene, dict):
+                raise ValueError('Invalid reviewed scene.')
+            start, end = scene.get('start_sec'), scene.get('end_sec')
+            if (type(start) not in (int, float) or type(end) not in (int, float)
+                    or not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end
+                    or (previous_end is not None and start != previous_end)):
+                raise ValueError('Reviewed bounds must be finite, ordered and contiguous.')
+            selected = {'start_sec': float(start), 'end_sec': float(end)}
+            if 'capture_sec' in scene:
+                capture = scene['capture_sec']
+                if type(capture) not in (int, float) or not math.isfinite(capture) or not start <= capture < end:
+                    raise ValueError('Reviewed capture must be inside its segment.')
+                selected['capture_sec'] = float(capture)
+            result.append(selected)
+            previous_end = end
+        return result
+
+    source = timeline(report.get('source_scenes'))
+    scenes = timeline(report.get('proposed_scenes'))
+    reviews = report.get('reviews')
+    if (not isinstance(reviews, list) or len(reviews) != len(source)
+            or any(not isinstance(review, dict) or type(review.get('segment_index')) is not int
+                   or review['segment_index'] != index for index, review in enumerate(reviews))):
+        raise ValueError('Completed report must include a review for every original segment.')
+    if scenes[0]['start_sec'] != source[0]['start_sec'] or scenes[-1]['end_sec'] != source[-1]['end_sec']:
+        raise ValueError('Reviewed proposals must cover the entire original timeline.')
+    return scenes
+
+
 def _detect_hybrid_slides(
     video_path: Path, workdir: Path, *, scene_threshold: float, scene_edge_weight: float,
-    vision_backend: str | None, vision_scan_interval: float, vision_timeout_seconds: int | None,
+    min_segment_seconds: int, transcripts: list[TranscriptSegment],
+    vision_backend: str | None, vision_timeout_seconds: int | None, reuse_scenes: bool = False,
 ) -> list[dict[str, float]]:
     analysis_dir = workdir / "slide_analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    candidates = SceneDetectorService().detect(
-        video_path, scene_threshold, 1, edge_weight=scene_edge_weight,
-        stats_csv_path=analysis_dir / "scene_stats.csv",
-    )
+    source = workdir / "scenes.json"
+    if reuse_scenes and source.is_file():
+        print(f"Reusing cached timeline: {source}", flush=True)
+        raw = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("Cached scenes.json must contain a nonempty timeline.")
+        candidates = [{"start_sec": scene["start_sec"], "end_sec": scene["end_sec"]} for scene in raw]
+    else:
+        print(f"Detecting algorithm scenes: threshold={scene_threshold}, edge_weight={scene_edge_weight}, min_segment_seconds={min_segment_seconds}", flush=True)
+        candidates = SceneDetectorService().detect(
+            video_path, scene_threshold, min_segment_seconds, edge_weight=scene_edge_weight,
+            stats_csv_path=analysis_dir / "scene_stats.csv",
+        )
     write_json(analysis_dir / "candidate_scenes.json", candidates)
-    print("Hybrid mode: checking candidate cuts and periodic samples with the vision model.", flush=True)
-    scenes = HybridSlideDetector().detect(
-        video_path, candidates, analysis_dir, backend=vision_backend,
-        scan_interval=vision_scan_interval, timeout_seconds=vision_timeout_seconds,
+    notes_path = workdir / "segments.json"
+    notes = _load_segments(notes_path) if notes_path.is_file() else None
+    print(f"Reviewing {len(candidates)} segments; at most one base request per segment and 10 extra requests.", flush=True)
+    scenes = SegmentSlideReviewer().review(
+        video_path, candidates, transcripts, analysis_dir, backend=vision_backend,
+        timeout_seconds=vision_timeout_seconds, existing_notes=notes,
     )
     write_json(analysis_dir / "scenes.json", scenes)
     print(f"Slide analysis: {len(scenes)} segments; review {analysis_dir / 'slide_review.json'}", flush=True)
     return scenes
 
 
+def _load_review_transcripts(course_dir: Path) -> list[TranscriptSegment]:
+    subtitle_path = course_dir / "subtitles.vtt"
+    if subtitle_path.is_file():
+        metadata = load_course_workspace_metadata(course_dir)
+        return SubtitleParser().parse_vtt(
+            subtitle_path, lang=(metadata.subtitle_language if metadata else None) or "unknown",
+            source=(metadata.subtitle_source if metadata else None) or "cached",
+        )
+    transcript_path = course_dir / "transcript.json"
+    if not transcript_path.is_file():
+        raise FileNotFoundError("detect-slides requires cached subtitles.vtt or transcript.json for segment review.")
+    raw = json.loads(transcript_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Cached transcript.json must contain subtitle evidence.")
+    result = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid cached transcript entry.")
+        start, end, text = item.get("start_sec"), item.get("end_sec"), item.get("text")
+        if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start
+                or not isinstance(text, str) or not text.strip()):
+            raise ValueError("Invalid cached transcript timing or text.")
+        result.append(TranscriptSegment(start, end, text, item.get("lang", "unknown"), item.get("source", "cached")))
+    return result
+
+
 def detect_slides_impl(
     course_name: str, workdir: Path = Path("workdir"), vision_backend: str | None = None,
-    vision_scan_interval: float = 5.0, vision_timeout_seconds: int | None = None,
-    scene_threshold: float = 15.0, scene_edge_weight: float = 0.3,
+    vision_timeout_seconds: int | None = None, scene_threshold: float = 15.0,
+    scene_edge_weight: float = 0.3, min_segment_seconds: int = 20,
 ) -> None:
-    """Preview slide segmentation from a cached video without replacing course notes."""
-    _validate_slide_options("hybrid", vision_backend, vision_scan_interval, vision_timeout_seconds)
-    # Avoid creating a course workspace when the required cached video is absent.
+    """Review cached segments and preview changes without replacing course notes."""
+    _validate_slide_options("hybrid", vision_backend, vision_timeout_seconds)
     course_dir = workdir / sanitize_course_name(course_name)
     video_path = course_dir / "video.mp4"
     if not video_path.is_file():
         raise FileNotFoundError(f"detect-slides requires an existing course video: {video_path}")
-    scenes = _detect_hybrid_slides(
-        video_path, course_dir, scene_threshold=scene_threshold, scene_edge_weight=scene_edge_weight,
-        vision_backend=vision_backend, vision_scan_interval=vision_scan_interval,
-        vision_timeout_seconds=vision_timeout_seconds,
-    )
-    preview_dir = course_dir / "slide_preview"
+    print(f"Loading cached subtitles/transcript: {course_dir}", flush=True)
+    transcripts = _load_review_transcripts(course_dir)
+    print(f"Loaded {len(transcripts)} subtitle cues.", flush=True)
+    try:
+        scenes = _detect_hybrid_slides(
+            video_path, course_dir, scene_threshold=scene_threshold, scene_edge_weight=scene_edge_weight,
+            min_segment_seconds=min_segment_seconds, transcripts=transcripts, reuse_scenes=True,
+            vision_backend=vision_backend, vision_timeout_seconds=vision_timeout_seconds,
+        )
+    except RuntimeError:
+        report_path = course_dir / 'slide_analysis' / 'slide_review.json'
+        if report_path.is_file():
+            try:
+                report = json.loads(report_path.read_text(encoding='utf-8'))
+                if report.get('status') == 'failed' and report.get('proposed_scenes'):
+                    _write_slide_preview(course_dir, report['proposed_scenes'], partial=True)
+            except Exception as preview_error:
+                print(f'Partial preview could not be written: {preview_error}', flush=True)
+        raise
+    _write_slide_preview(course_dir, scenes)
+
+
+def _write_slide_preview(course_dir: Path, scenes: list[dict[str, float]], *, partial: bool = False) -> Path:
+    """Render saved proposals locally; this function makes no model requests."""
+    video_path = course_dir / 'video.mp4'
+    preview_dir = course_dir / ("slide_preview/partial" if partial else "slide_preview")
+    print(f"Writing preview and {len(scenes)} representative frames: {preview_dir}", flush=True)
     preview_dir.mkdir(parents=True, exist_ok=True)
     FrameSampler().sample_for_scenes(video_path, preview_dir / "frames", scenes, 1.0)
     write_json(preview_dir / "scenes.json", scenes)
-    lines = ["# 簡報分段預覽", "", "疑似切點與無法確認的位置請見 ../slide_analysis/slide_review.json。", ""]
+    report_link = '../../slide_analysis/slide_review.json' if partial else '../slide_analysis/slide_review.json'
+    lines = ["# 簡報按段審查部分預覽" if partial else "# 簡報按段審查預覽", "",
+             f"[完整判斷與證據]({report_link})", ""]
+    if partial:
+        lines.extend([f"審查未完成。此預覽僅包含已保存的修正提案，涵蓋 {scenes[0]['start_sec']:.3f}–{scenes[-1]['end_sec']:.3f} 秒；後續區段尚未完成審查。", ""])
+    report_path = course_dir / "slide_analysis" / "slide_review.json"
+    if report_path.is_file():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if partial:
+            lines.extend([f"停止原因：{report.get('error', report.get('status', 'unknown'))}", ""])
+        stats = report.get("statistics", {})
+        lines.extend([f"模型請求：{stats.get('model_requests', 0)}；快取命中：{stats.get('cache_hits', 0)}；追加分析：{stats.get('local_requests', 0)}/10", "", "## 原始區段審查", ""])
+        for review in report.get("reviews", []):
+            lines.extend([f"- 區段 {review['segment_index'] + 1}: {review['status']}（信心 {review['confidence']:.2f}）— {review['reason']}"])
+            if review.get("actions"):
+                lines.append(f"  - 處理結果：{', '.join(review['actions'])}")
+            for evidence in review.get("evidence", []):
+                lines.append(f"  - {evidence['start_sec']:.3f}–{evidence['end_sec']:.3f} 秒：{evidence['detail']}")
+            local_review = review.get("local_review")
+            if local_review:
+                lines.append(f"  - 局部分析（信心 {local_review['confidence']:.2f}）：{local_review['reason']}")
+                for evidence in local_review.get("evidence", []):
+                    lines.append(f"  - 局部證據 {evidence['start_sec']:.3f}–{evidence['end_sec']:.3f} 秒：{evidence['detail']}")
+            if review.get("note_mismatch"):
+                lines.append("  - 既有筆記可能與字幕或畫面不符，需人工確認。")
+        if report.get("uncertain_ranges"):
+            lines.extend(["", "## 待人工確認", "", *[f"- {item['start_sec']:.3f}–{item['end_sec']:.3f} 秒：{item['reason']}" for item in report['uncertain_ranges']]])
+        lines.append("")
     for index, scene in enumerate(scenes, 1):
         lines.extend([
             f"## {index}: {scene['start_sec']:.3f}–{scene['end_sec']:.3f} 秒", "",
-            f"截圖時間：{scene['capture_sec']:.3f} 秒" if "capture_sec" in scene else "未確認可讀簡報；使用區段尾端畫面供檢查。",
+            f"擷取時間：{scene['capture_sec']:.3f} 秒" if "capture_sec" in scene else "尚未確認可讀且符合字幕的簡報；暫用區段末端畫面。",
             "", f"![簡報 {index}](frames/{scene_frame_filename(scene)})", "",
         ])
-    (preview_dir / "preview.md").write_text("\n".join(lines), encoding="utf-8")
-    print(f"Slide preview written at {preview_dir / 'preview.md'}")
+    output = preview_dir / ('partial_preview.md' if partial else 'preview.md')
+    output.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Slide preview written at {output}", flush=True)
+    return output
 
 
 def rewrite_notes_impl(
@@ -553,7 +688,6 @@ if HAS_TYPER:
         scene_edge_weight: float = typer.Option(0.0, help=GENERATE_HELP["scene_edge_weight"]),
         scene_mode: str = typer.Option("algorithm", help=GENERATE_HELP["scene_mode"]),
         vision_backend: str | None = typer.Option(None, help=GENERATE_HELP["vision_backend"]),
-        vision_scan_interval: float = typer.Option(5.0, help=GENERATE_HELP["vision_scan_interval"]),
         vision_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["vision_timeout_seconds"]),
         llm_backend: str | None = typer.Option(None, help=GENERATE_HELP["llm_backend"]),
         llm_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["llm_timeout_seconds"]),
@@ -577,7 +711,6 @@ if HAS_TYPER:
             scene_edge_weight=scene_edge_weight,
             scene_mode=scene_mode,
             vision_backend=vision_backend,
-            vision_scan_interval=vision_scan_interval,
             vision_timeout_seconds=vision_timeout_seconds,
             llm_backend=llm_backend,
             llm_timeout_seconds=llm_timeout_seconds,
@@ -597,15 +730,15 @@ if HAS_TYPER:
         course_name: str = typer.Option(..., help=GENERATE_HELP["course_name"]),
         workdir: Path = typer.Option(Path("workdir"), help=GENERATE_HELP["workdir"]),
         vision_backend: str | None = typer.Option(None, help=GENERATE_HELP["vision_backend"]),
-        vision_scan_interval: float = typer.Option(5.0, help=GENERATE_HELP["vision_scan_interval"]),
         vision_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["vision_timeout_seconds"]),
+        min_segment_seconds: int = typer.Option(20, help=GENERATE_HELP["min_segment_seconds"]),
         scene_threshold: float = typer.Option(15.0, help=GENERATE_HELP["scene_threshold"]),
         scene_edge_weight: float = typer.Option(0.3, help=GENERATE_HELP["scene_edge_weight"]),
     ) -> None:
         """Preview slide pages in a cached video, without rewriting notes."""
         detect_slides_impl(
             course_name=course_name, workdir=workdir, vision_backend=vision_backend,
-            vision_scan_interval=vision_scan_interval, vision_timeout_seconds=vision_timeout_seconds,
+            vision_timeout_seconds=vision_timeout_seconds, min_segment_seconds=min_segment_seconds,
             scene_threshold=scene_threshold, scene_edge_weight=scene_edge_weight,
         )
 
@@ -683,9 +816,8 @@ else:
         generate_parser.add_argument("--scene-threshold", type=float, default=27.0, help=GENERATE_HELP["scene_threshold"])
         generate_parser.add_argument("--min-segment-seconds", type=int, default=20, help=GENERATE_HELP["min_segment_seconds"])
         generate_parser.add_argument("--scene-edge-weight", type=float, default=0.0, help=GENERATE_HELP["scene_edge_weight"])
-        generate_parser.add_argument("--scene-mode", choices=("algorithm", "hybrid"), default="algorithm", help=GENERATE_HELP["scene_mode"])
+        generate_parser.add_argument("--scene-mode", choices=("algorithm", "hybrid", "reviewed"), default="algorithm", help=GENERATE_HELP["scene_mode"])
         generate_parser.add_argument("--vision-backend", help=GENERATE_HELP["vision_backend"])
-        generate_parser.add_argument("--vision-scan-interval", type=float, default=5.0, help=GENERATE_HELP["vision_scan_interval"])
         generate_parser.add_argument("--vision-timeout-seconds", type=int, help=GENERATE_HELP["vision_timeout_seconds"])
         generate_parser.add_argument("--llm-backend", help=GENERATE_HELP["llm_backend"])
         generate_parser.add_argument("--llm-timeout-seconds", type=int, help=GENERATE_HELP["llm_timeout_seconds"])
@@ -702,8 +834,8 @@ else:
         slides_parser.add_argument("--course-name", required=True, help=GENERATE_HELP["course_name"])
         slides_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
         slides_parser.add_argument("--vision-backend", help=GENERATE_HELP["vision_backend"])
-        slides_parser.add_argument("--vision-scan-interval", type=float, default=5.0, help=GENERATE_HELP["vision_scan_interval"])
         slides_parser.add_argument("--vision-timeout-seconds", type=int, help=GENERATE_HELP["vision_timeout_seconds"])
+        slides_parser.add_argument("--min-segment-seconds", type=int, default=20, help=GENERATE_HELP["min_segment_seconds"])
         slides_parser.add_argument("--scene-threshold", type=float, default=15.0, help=GENERATE_HELP["scene_threshold"])
         slides_parser.add_argument("--scene-edge-weight", type=float, default=0.3, help=GENERATE_HELP["scene_edge_weight"])
         download_subtitles_parser = subparsers.add_parser("download-subtitles", help="Download and parse subtitles only.")
@@ -748,7 +880,6 @@ else:
                 scene_edge_weight=args.scene_edge_weight,
                 scene_mode=args.scene_mode,
                 vision_backend=args.vision_backend,
-                vision_scan_interval=args.vision_scan_interval,
                 vision_timeout_seconds=args.vision_timeout_seconds,
                 llm_backend=args.llm_backend,
                 llm_timeout_seconds=args.llm_timeout_seconds,
@@ -765,7 +896,7 @@ else:
         if args.command == "detect-slides":
             detect_slides_impl(
                 course_name=args.course_name, workdir=args.workdir, vision_backend=args.vision_backend,
-                vision_scan_interval=args.vision_scan_interval, vision_timeout_seconds=args.vision_timeout_seconds,
+                vision_timeout_seconds=args.vision_timeout_seconds, min_segment_seconds=args.min_segment_seconds,
                 scene_threshold=args.scene_threshold, scene_edge_weight=args.scene_edge_weight,
             )
         if args.command == "download-subtitles":

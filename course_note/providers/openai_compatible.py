@@ -6,8 +6,18 @@ import os
 import socket
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+
+class LLMResponseError(RuntimeError):
+    """Keep a failed response for local diagnosis without dumping it to the console."""
+
+    def __init__(self, message: str, response_body: str) -> None:
+        super().__init__(message)
+        self.response_body = response_body
 
 
 @dataclass(slots=True)
@@ -28,6 +38,9 @@ class ProviderDefaults:
 
 
 class OpenAICompatibleClient:
+    def __init__(self) -> None:
+        self.last_response_metadata: dict[str, Any] | None = None
+
     DEFAULTS = {
         "ollama": ProviderDefaults(
             env_prefix="OLLAMA",
@@ -115,31 +128,15 @@ class OpenAICompatibleClient:
         backend: str | None = None,
         timeout_seconds: int | None = None,
     ) -> ProviderConfig:
-        resolved_backend = self._resolve_backend_name(
-            backend or os.getenv("COURSE_NOTE_VISION_PROVIDER") or "vllm"
-        )
-        defaults = self.DEFAULTS[resolved_backend]
-        model = (os.getenv("COURSE_NOTE_VISION_MODEL") or "").strip()
-        if not model:
-            raise RuntimeError("COURSE_NOTE_VISION_MODEL must explicitly name a vision-capable model.")
-        timeout_value = (
-            timeout_seconds if timeout_seconds is not None
-            else os.getenv("COURSE_NOTE_VISION_TIMEOUT_SECONDS", "120")
-        )
-        timeout_error = "COURSE_NOTE_VISION_TIMEOUT_SECONDS / --vision-timeout-seconds must be a positive integer."
-        if timeout_seconds is not None and (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)):
-            raise RuntimeError(timeout_error)
+        """Use the selected provider's existing model, connection and timeout settings."""
+        timeout_error = "COURSE_NOTE_LLM_TIMEOUT_SECONDS / --vision-timeout-seconds must be a positive integer."
         try:
-            resolved_timeout = int(timeout_value)
+            config = self.resolve_config(backend or os.getenv("COURSE_NOTE_VISION_PROVIDER"), timeout_seconds)
         except (TypeError, ValueError) as exc:
             raise RuntimeError(timeout_error) from exc
-        if resolved_timeout <= 0:
+        if type(config.timeout_seconds) is not int or config.timeout_seconds <= 0:
             raise RuntimeError(timeout_error)
-        api_base = os.getenv("COURSE_NOTE_VISION_API_BASE", self._resolve_api_base(defaults)).strip()
-        api_key = os.getenv("COURSE_NOTE_VISION_API_KEY", self._resolve_api_key(defaults))
-        if not api_base:
-            raise RuntimeError(f"No API base configured for vision backend '{resolved_backend}'.")
-        return ProviderConfig(resolved_backend, model, api_base, api_key, resolved_timeout)
+        return config
 
     def _resolve_api_base(self, defaults: ProviderDefaults) -> str:
         env_prefix = defaults.env_prefix
@@ -197,13 +194,13 @@ class OpenAICompatibleClient:
     def _chat(
         self, config: ProviderConfig, content: str | list[dict[str, object]], *, vision: bool = False
     ) -> str:
-        payload = json.dumps(
-            {
-                "model": config.model,
-                "messages": [{"role": "user", "content": content}],
-                "temperature": 0.2,
-            }
-        ).encode("utf-8")
+        self.last_response_metadata = None
+        payload_data: dict[str, Any] = {
+            'model': config.model, 'messages': [{'role': 'user', 'content': content}], 'temperature': 0.2,
+        }
+        if vision and config.backend == 'deepseek' and urlsplit(config.api_base).hostname == 'api.deepseek.com':
+            payload_data.update(thinking={'type': 'disabled'}, response_format={'type': 'json_object'}, max_tokens=2048)
+        payload = json.dumps(payload_data).encode('utf-8')
         request = urllib.request.Request(
             url=f"{config.api_base}/chat/completions",
             data=payload,
@@ -223,7 +220,7 @@ class OpenAICompatibleClient:
             raise RuntimeError(f"LLM request failed with status {exc.code}: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
             timeout_setting = (
-                "--vision-timeout-seconds / COURSE_NOTE_VISION_TIMEOUT_SECONDS" if vision
+                "--vision-timeout-seconds / COURSE_NOTE_LLM_TIMEOUT_SECONDS" if vision
                 else "--llm-timeout-seconds / COURSE_NOTE_LLM_TIMEOUT_SECONDS"
             )
             raise RuntimeError(
@@ -248,8 +245,14 @@ class OpenAICompatibleClient:
         if not isinstance(choices, list) or not choices:
             raise RuntimeError(f"LLM response did not include choices: {body[:500]}")
         first_choice = choices[0]
+        finish_reason = first_choice.get('finish_reason') if isinstance(first_choice, dict) else None
+        usage = result.get('usage', data.get('usage') if isinstance(data, dict) else None)
+        self.last_response_metadata = {'request_id': result.get('id'), 'finish_reason': finish_reason, 'usage': usage}
         message = first_choice.get("message") if isinstance(first_choice, dict) else None
         response_content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(response_content, str) or not response_content.strip():
-            raise RuntimeError(f"LLM response did not include nonempty text message content: {body[:500]}")
+            reasoning_present = bool(message.get('reasoning_content')) if isinstance(message, dict) else False
+            raise LLMResponseError(
+                f'LLM response did not include nonempty text message content: finish_reason={finish_reason}; '
+                f'reasoning_present={reasoning_present}; usage={json.dumps(usage)}.', body)
         return response_content.strip()
