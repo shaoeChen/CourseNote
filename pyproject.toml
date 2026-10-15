@@ -13,7 +13,7 @@ authors = [{ name = "shaoeChen" }]
 dependencies = [
   "typer>=0.12,<1.0",
   "scenedetect>=0.6.3,<1.0",
-  "yt-dlp>=2026.3.17",
+  "yt-dlp[default]>=2026.8.19",
 ]
 
 [project.urls]
