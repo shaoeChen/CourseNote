@@ -213,3 +213,6 @@ output*.md
 /AGENTS.md
 /CLAUDE.md
 /.github/workflows/ClaudeCodeAssistant.yaml
+
+# Qwen session scratch files
+/.qwen/tmp/
