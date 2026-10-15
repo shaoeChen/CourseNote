@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from course_note.utils.env import load_env_file
 
@@ -27,7 +30,7 @@ DEFAULT_UPLOAD_RETRY_DELAY_SECONDS = 5.0
 DEFAULT_UPLOAD_SPACING_SECONDS = 1.0
 DEFAULT_POST_UPLOAD_SETTLE_SECONDS = 10.0
 UNIX_TIMESTAMP_MILLISECONDS_THRESHOLD = 100_000_000_000
-MAX_RETRY_SLEEP_SECONDS = 3600.0
+MAX_RETRY_SLEEP_SECONDS = 60.0
 
 
 @dataclass(slots=True)
@@ -178,6 +181,9 @@ class HackMDClient:
                 last_error = exc
                 if not self._should_retry(exc, attempt, self.upload_retry_attempts):
                     break
+                progress = getattr(self, 'progress', None)
+                if callable(progress):
+                    progress('HACKMD_RETRY', f'image={image_path.name} status={exc.status_code} attempt={attempt + 1}/{self.upload_retry_attempts}')
                 self._sleep_before_retry(self._retry_delay_seconds(exc, attempt, self.upload_retry_delay_seconds))
 
         if last_error is not None:
@@ -273,7 +279,8 @@ class HackMDClient:
         if error.retry_after_seconds is not None:
             return max(error.retry_after_seconds, base_delay)
 
-        if error.rate_limit_reset_at is not None and error.status_code == 429:
+        if (error.rate_limit_reset_at is not None and error.status_code == 429
+                and error.rate_limit_remaining in (None, 0)):
             return max(error.rate_limit_reset_at - time.time(), base_delay, 0.0)
 
         delay = base_delay * (2**attempt)
@@ -293,7 +300,16 @@ class HackMDClient:
         self._rate_limit_reset_at = None
 
     def _sleep_before_retry(self, delay_seconds: float) -> None:
+        if delay_seconds > MAX_RETRY_SLEEP_SECONDS:
+            raise HackMDRequestError(
+                f"HackMD requires a wait of {delay_seconds:.0f} seconds. Resume publishing later; "
+                "successful image URLs are preserved in hackmd_publish.json.",
+                retryable=False, retry_after_seconds=delay_seconds,
+            )
         bounded_delay = min(max(delay_seconds, 0.0), MAX_RETRY_SLEEP_SECONDS)
+        progress = getattr(self, 'progress', None)
+        if callable(progress) and bounded_delay >= 2:
+            progress('HACKMD_RETRY_WAIT', f'等待重試或限流重置 seconds={bounded_delay:.1f}')
         time.sleep(bounded_delay)
 
     def _update_rate_limit_state(self, headers: Any) -> None:
@@ -390,6 +406,48 @@ class HackMDPublisher:
     ) -> None:
         self.client = client or HackMDClient()
         self.post_upload_settle_seconds = max(post_upload_settle_seconds, 0.0)
+        self._log_path: Path | None = None
+        self._lock = threading.Lock()
+
+    def _emit(self, event: str, message: str) -> None:
+        token = getattr(self.client, 'api_token', '')
+        message = ' '.join(message.split())
+        if token:
+            message = message.replace(token, '[REDACTED]')
+        line = f"{datetime.now().astimezone().isoformat(timespec='seconds')} [{event}] {message}"
+        with self._lock:
+            if self._log_path:
+                with self._log_path.open('a', encoding='utf-8') as log:
+                    log.write(line + '\n')
+            print(line, flush=True)
+
+    def _call(self, event: str, action: Callable[[], Any]) -> Any:
+        started = time.perf_counter()
+        self._emit(event, '開始')
+        stop = threading.Event()
+
+        def waiting() -> None:
+            while not stop.wait(10):
+                self._emit('HACKMD_WAIT', f'stage={event} elapsed={time.perf_counter() - started:.1f}s')
+
+        heartbeat = threading.Thread(target=waiting, daemon=True)
+        heartbeat.start()
+        try:
+            result = action()
+        finally:
+            stop.set()
+            heartbeat.join()
+        self._emit(event, f'完成 elapsed={time.perf_counter() - started:.1f}s')
+        return result
+
+    @staticmethod
+    def _save_state(path: Path, state: dict[str, Any]) -> None:
+        temp = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+        try:
+            temp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
 
     def publish_markdown(
         self,
@@ -401,32 +459,66 @@ class HackMDPublisher:
         note_path = note_path.resolve()
         content = note_path.read_text(encoding="utf-8")
         note_title = title or self._extract_title(content, note_path)
+        self._log_path = note_path.parent / 'hackmd_publish.log'
+        self.client.progress = self._emit
+        state_path = note_path.parent / 'hackmd_publish.json'
+        source_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+        refs = [m.group('image').strip() for line in content.splitlines() if (m := SCREENSHOT_LINE_RE.match(line))]
+        for ref in refs:
+            self._resolve_image_path(ref, note_path, image_dir)
+        self._emit('HACKMD_START', f'圖片參照={len(refs)}；日誌：{self._log_path}')
+        state: dict[str, Any] = {'version': 1, 'source_hash': source_hash, 'images': {}, 'status': 'starting'}
+        if state_path.exists():
+            saved = json.loads(state_path.read_text(encoding='utf-8'))
+            if not isinstance(saved, dict) or saved.get('version') != 1:
+                raise ValueError('Invalid HackMD publication state.')
+            if saved.get('source_hash') != source_hash:
+                raise ValueError('Article changed since saved HackMD publication; preserve or rename hackmd_publish.json before a new publication.')
+            state = saved
+        if state.get('status') == 'creating' and not state.get('note'):
+            raise RuntimeError('Previous HackMD note creation outcome is unknown; check existing notes before retrying to avoid duplicates.')
+        if state.get('note'):
+            created_note = HackMDNote(**state['note'])
+            self._emit('HACKMD_RESUME', f'沿用文章：{created_note.publish_link or created_note.note_id}')
+            if state.get('status') == 'complete' and all(
+                (cached := state['images'].get(str(path := self._resolve_image_path(ref, note_path, image_dir))))
+                and cached.get('sha256') == hashlib.sha256(path.read_bytes()).hexdigest()
+                and cached.get('url') for ref in refs
+            ):
+                self._emit('HACKMD_DONE', '此版本已完成發布，不重複上傳或更新線上文章。')
+                return HackMDPublishResult(created_note.note_id, note_title, created_note.publish_link,
+                                          created_note.permalink, len(refs))
+        else:
+            state['status'] = 'creating'
+            self._save_state(state_path, state)
 
-        if not self._contains_local_images(content):
-            created_note = self.client.create_note(note_title, content)
-            return HackMDPublishResult(
-                note_id=created_note.note_id,
-                title=note_title,
-                publish_link=created_note.publish_link,
-                permalink=created_note.permalink,
-                image_count=0,
-            )
+            def create_and_checkpoint() -> HackMDNote:
+                note = self.client.create_note(note_title, content)
+                state.update(note=asdict(note), status='created')
+                self._save_state(state_path, state)
+                return note
 
-        created_note = self.client.create_note(note_title, content)
-        enriched_content, image_count = self._inject_uploaded_images(
-            content,
-            note_path=note_path,
-            note_id=created_note.note_id,
-            image_dir=image_dir,
-        )
-        if image_count > 0 and self.post_upload_settle_seconds > 0:
-            self._sleep_before_finalize(self.post_upload_settle_seconds)
+            created_note = self._call('HACKMD_CREATE', create_and_checkpoint)
         try:
-            self.client.update_note(created_note, content=enriched_content)
-        except HackMDRequestError as exc:
-            if not exc.retryable:
-                raise
-            created_note = self.client.create_note(note_title, enriched_content)
+            state['status'] = 'uploading'
+            self._save_state(state_path, state)
+            enriched_content, image_count = self._inject_uploaded_images(
+                content, note_path=note_path, note_id=created_note.note_id, image_dir=image_dir,
+                state=state, state_path=state_path,
+            )
+            if image_count > 0:
+                if self.post_upload_settle_seconds > 0:
+                    self._emit('HACKMD_SETTLE', f'等待附件就緒 seconds={self.post_upload_settle_seconds}')
+                    self._call('HACKMD_SETTLE', lambda: self._sleep_before_finalize(self.post_upload_settle_seconds))
+                self._call('HACKMD_UPDATE', lambda: self.client.update_note(created_note, content=enriched_content))
+            state['status'] = 'complete'
+            self._save_state(state_path, state)
+        except (Exception, KeyboardInterrupt) as exc:
+            state.update(status='interrupted' if isinstance(exc, KeyboardInterrupt) else 'failed', error=str(exc))
+            self._save_state(state_path, state)
+            self._emit('HACKMD_ERROR', f'{type(exc).__name__}: {str(exc)[:500]}；重跑可沿用此文章與已上傳圖片。')
+            raise
+        self._emit('HACKMD_DONE', f'圖片={image_count}；{created_note.publish_link or created_note.note_id}')
         return HackMDPublishResult(
             note_id=created_note.note_id,
             title=note_title,
@@ -445,11 +537,14 @@ class HackMDPublisher:
         note_path: Path,
         note_id: str,
         image_dir: Path | None,
+        state: dict[str, Any],
+        state_path: Path,
     ) -> tuple[str, int]:
         lines = content.splitlines()
         rendered_lines: list[str] = []
         uploaded_links: dict[Path, str] = {}
         upload_count = 0
+        total = sum(bool(SCREENSHOT_LINE_RE.match(line)) for line in lines)
 
         for line in lines:
             rendered_lines.append(line)
@@ -459,9 +554,18 @@ class HackMDPublisher:
 
             image_ref = match.group("image").strip()
             image_path = self._resolve_image_path(image_ref, note_path, image_dir)
+            self._emit(f'HACKMD_UPLOAD {upload_count + 1}/{total}', image_path.name)
             image_url = uploaded_links.get(image_path)
             if image_url is None:
-                image_url = self.client.upload_image(note_id, image_path)
+                digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
+                cached = state['images'].get(str(image_path))
+                if cached and cached.get('sha256') == digest and isinstance(cached.get('url'), str) and cached['url']:
+                    image_url = cached['url']
+                    self._emit('HACKMD_CACHE', f'已上傳，沿用連結：{image_path.name}')
+                else:
+                    image_url = self._call('HACKMD_IMAGE_REQUEST', lambda: self.client.upload_image(note_id, image_path))
+                    state['images'][str(image_path)] = {'sha256': digest, 'url': image_url}
+                    self._save_state(state_path, state)
                 uploaded_links[image_path] = image_url
             rendered_lines.append(f"![{image_path.name}]({image_url})")
             upload_count += 1

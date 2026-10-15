@@ -149,7 +149,7 @@ def test_publish_markdown_waits_before_final_update_when_images_exist(
     assert sleeps == [7.5]
 
 
-def test_publish_markdown_creates_final_note_when_update_after_upload_fails(tmp_path: Path) -> None:
+def test_publish_markdown_keeps_existing_note_when_update_after_upload_fails(tmp_path: Path) -> None:
     note_path = tmp_path / "output.md"
     note_path.write_text(
         "# Demo Title\n\n##\n簡報：000243.jpg\n時間：00:02:43 ~ 00:04:51\n重點：內容\n",
@@ -161,9 +161,10 @@ def test_publish_markdown_creates_final_note_when_update_after_upload_fails(tmp_
     image_path.write_bytes(b"fake-image")
 
     client = FailingUpdateHackMDClient()
-    result = HackMDPublisher(client=client, post_upload_settle_seconds=0).publish_markdown(note_path, image_dir=image_dir)
+    with pytest.raises(HackMDRequestError):
+        HackMDPublisher(client=client, post_upload_settle_seconds=0).publish_markdown(note_path, image_dir=image_dir)
 
-    assert len(client.created) == 2
+    assert len(client.created) == 1
     assert client.uploaded == [("asset-note-123", image_path.resolve())]
     assert client.updated == [
         {
@@ -172,10 +173,65 @@ def test_publish_markdown_creates_final_note_when_update_after_upload_fails(tmp_
             "content": "# Demo Title\n\n##\n簡報：000243.jpg\n![000243.jpg](https://hackmd.io/_uploads/000243.jpg)\n時間：00:02:43 ~ 00:04:51\n重點：內容\n",
         }
     ]
-    assert client.created[1]["content"] == client.updated[0]["content"]
-    assert result.note_id == "note-123"
-    assert result.publish_link == "https://hackmd.io/@demo/note-123"
-    assert result.image_count == 1
+    import json
+    state = json.loads((tmp_path / 'hackmd_publish.json').read_text())
+    assert state['status'] == 'failed' and state['note']['note_id'] == 'asset-note-123'
+    assert len(state['images']) == 1
+
+
+def test_failed_image_publish_resumes_same_note_without_reuploading_successes(tmp_path, capsys):
+    import json
+    note = tmp_path / 'article.md'
+    note.write_text('# Demo\n簡報：a.jpg\n簡報：b.jpg\n', encoding='utf-8')
+    for name in ('a.jpg', 'b.jpg'):
+        (tmp_path / name).write_bytes(name.encode())
+
+    class OnceFailingClient(DummyHackMDClient):
+        def upload_image(self, note_id, image_path):
+            if image_path.name == 'b.jpg':
+                raise RuntimeError('image unavailable')
+            return super().upload_image(note_id, image_path)
+
+    first = OnceFailingClient()
+    with pytest.raises(RuntimeError, match='image unavailable'):
+        HackMDPublisher(first, post_upload_settle_seconds=0).publish_markdown(note, image_dir=tmp_path)
+    second = DummyHackMDClient()
+    result = HackMDPublisher(second, post_upload_settle_seconds=0).publish_markdown(note, image_dir=tmp_path)
+    assert not second.created
+    assert [path.name for _, path in second.uploaded] == ['b.jpg']
+    assert result.note_id == 'asset-note-123' and result.image_count == 2
+    output = capsys.readouterr().out
+    assert '[HACKMD_UPLOAD 1/2]' in output and '[HACKMD_RESUME]' in output and '[HACKMD_CACHE]' in output
+    assert (tmp_path / 'hackmd_publish.log').is_file()
+    assert json.loads((tmp_path / 'hackmd_publish.json').read_text())['status'] == 'complete'
+
+
+def test_completed_publish_rerun_does_not_modify_remote_note(tmp_path):
+    note = tmp_path / 'article.md'
+    note.write_text('# Demo\n', encoding='utf-8')
+    client = DummyHackMDClient()
+    publisher = HackMDPublisher(client)
+    publisher.publish_markdown(note)
+    publisher.publish_markdown(note)
+    assert len(client.created) == 1 and not client.updated
+
+
+def test_ambiguous_creation_does_not_create_duplicate_on_retry(tmp_path):
+    note = tmp_path / 'article.md'
+    note.write_text('# Demo\n', encoding='utf-8')
+
+    class AmbiguousClient(DummyHackMDClient):
+        def create_note(self, *args, **kwargs):
+            super().create_note(*args, **kwargs)
+            raise TimeoutError('creation outcome unknown')
+
+    client = AmbiguousClient()
+    publisher = HackMDPublisher(client)
+    with pytest.raises(TimeoutError):
+        publisher.publish_markdown(note)
+    with pytest.raises(RuntimeError, match='outcome is unknown'):
+        publisher.publish_markdown(note)
+    assert len(client.created) == 1
 
 
 def test_update_note_retries_transient_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -347,6 +403,14 @@ def test_sleep_before_retry_clamps_large_delay(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(hackmd_publisher.time, "sleep", lambda delay: sleeps.append(delay))
 
-    client._sleep_before_retry(10_000_000_000.0)
+    with pytest.raises(HackMDRequestError, match="Resume publishing later"):
+        client._sleep_before_retry(10_000_000_000.0)
 
-    assert sleeps == [3600.0]
+    assert sleeps == []
+
+
+def test_image_retry_does_not_wait_for_available_general_api_quota() -> None:
+    client = HackMDClient(api_base="https://api.hackmd.test/v1", api_token="token")
+    error = HackMDRequestError("Too Many Requests", status_code=429, retryable=True,
+                              rate_limit_remaining=9968, rate_limit_reset_at=10_000_000_000.0)
+    assert client._retry_delay_seconds(error, 0, 5.0) == 15.0
