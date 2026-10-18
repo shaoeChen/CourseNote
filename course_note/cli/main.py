@@ -42,7 +42,7 @@ ARTICLE_FILENAME = "article.md"
 GENERATE_HELP = {
     "url": "Course video URL.",
     "course_name": "Required course identifier. The same course name reuses the same per-course workspace under --workdir.",
-    "subtitle_lang": "Preferred subtitle language code, for example zh-TW or en.",
+    "subtitle_lang": "Preferred subtitle track language, for example zh-TW or en. Audio transcription detects its language automatically; note output remains Traditional Chinese.",
     "sample_interval": "How many seconds before each segment end to capture the representative frame. A value of 1 means capture near the segment end, not near the segment start.",
     "scene_threshold": "PySceneDetect content threshold. Lower values split scenes more aggressively, higher values require larger visual changes.",
     "min_segment_seconds": "Minimum allowed scene duration in seconds. Scene cuts closer than this are merged to avoid overly short segments.",
@@ -57,7 +57,7 @@ GENERATE_HELP = {
     "with_key_terms": "Extract key terms for the whole course.",
     "include_extra_notes": "Allow the LLM to emit an extra notes section when needed.",
     "include_transcript": "Include the original transcript text in each segment of the rendered Markdown.",
-    "transcribe_fallback": "When the video has no native or auto subtitles, download audio and transcribe it with faster-whisper to generate timestamped subtitles.",
+    "transcribe_fallback": "When no native or auto subtitles match --subtitle-lang, download audio and transcribe it in its automatically detected original language with faster-whisper.",
     "whisper_model": "faster-whisper model name used by --transcribe-fallback, for example small, medium, or large-v3.",
     "whisper_device": "faster-whisper device: auto (CUDA if available), cuda, or cpu.",
     "workdir": "Base working directory that stores per-course subfolders and intermediate artifacts.",
@@ -203,8 +203,9 @@ def generate_impl(
             course_name=course_name,
             source_url=url,
             title=note.title,
-            subtitle_language=subtitle_lang,
+            subtitle_language=subtitle_result.language,
             subtitle_source=subtitle_result.source,
+            subtitle_requested_language=subtitle_lang,
         ),
     )
 
@@ -512,6 +513,7 @@ def download_subtitles_impl(
             title=subtitle_result.title,
             subtitle_language=subtitle_result.language,
             subtitle_source=subtitle_result.source,
+            subtitle_requested_language=subtitle_lang,
         ),
     )
 
@@ -584,7 +586,7 @@ def _build_cached_subtitle_result(
         subtitle_path=workdir / "subtitles.vtt",
         transcript_json_path=workdir / "transcript.json",
         source=source,
-        language=subtitle_lang,
+        language=(metadata.subtitle_language if metadata else None) or subtitle_lang,
     )
 
 
@@ -596,6 +598,10 @@ def _load_or_download_video(url: str, workdir: Path) -> Path:
 
 
 def _can_reuse_subtitles(metadata: CourseWorkspaceMetadata | None, subtitle_lang: str) -> bool:
+    if metadata is not None and metadata.subtitle_source == "transcribed":
+        # Legacy transcriptions forced the preferred subtitle language onto the
+        # audio. Only new caches record the preference separately from detection.
+        return metadata.subtitle_requested_language == subtitle_lang
     if metadata is None or metadata.subtitle_language is None:
         return True
     return metadata.subtitle_language == subtitle_lang

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from course_note.utils.subprocess_utils import run_command
 
@@ -46,7 +47,7 @@ class YouTubeSubtitleDownloader:
             return SubtitleDownloadResult(title, auto_vtt, workdir / "transcript.json", "auto", language)
 
         if self.transcribe_fallback:
-            return self._transcribe_and_write_vtt(url, workdir, title, language)
+            return self._transcribe_and_write_vtt(url, workdir, title)
 
         raise RuntimeError(f"No subtitles available for language '{language}'.")
 
@@ -58,37 +59,29 @@ class YouTubeSubtitleDownloader:
         *,
         auto: bool,
     ) -> Path | None:
-        subtitle_target = workdir / "subtitles"
-        command = [
-            "yt-dlp",
-            "--skip-download",
-            "--sub-format",
-            "vtt",
-            "-o",
-            str(subtitle_target),
-            url,
-        ]
-        if auto:
-            command[1:1] = ["--write-auto-sub", "--sub-langs", language]
-        else:
-            command[1:1] = ["--write-sub", "--sub-langs", language]
-        self._run(command)
-        vtt_candidates = [
-            subtitle_target.with_suffix(f".{language}.vtt"),
-            subtitle_target.with_suffix(f".{language}-{language}.vtt"),
-            subtitle_target.with_suffix(".vtt"),
-        ]
-        for candidate in vtt_candidates:
-            if candidate.exists():
+        # Only inspect files from this attempt; an existing workspace VTT may
+        # belong to another language or a legacy, incorrectly forced transcript.
+        with TemporaryDirectory(prefix="subtitle-download-", dir=workdir) as temporary_dir:
+            subtitle_target = Path(temporary_dir) / "subtitles"
+            command = [
+                "yt-dlp",
+                "--write-auto-sub" if auto else "--write-sub",
+                "--sub-langs", language,
+                "--skip-download",
+                "--sub-format", "vtt",
+                "-o", str(subtitle_target),
+                url,
+            ]
+            self._run(command)
+            vtt_files = sorted(
+                Path(temporary_dir).glob("subtitles*.vtt"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if vtt_files:
                 final_path = workdir / "subtitles.vtt"
-                candidate.replace(final_path)
+                vtt_files[0].replace(final_path)
                 return final_path
-        # 若 yt-dlp 寫出其他檔名（例如多語言 auto 字幕），掃描目錄找最新 vtt
-        vtt_files = sorted(workdir.glob("subtitles*.vtt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if vtt_files:
-            final_path = workdir / "subtitles.vtt"
-            vtt_files[0].replace(final_path)
-            return final_path
         return None
 
     def _transcribe_and_write_vtt(
@@ -96,7 +89,6 @@ class YouTubeSubtitleDownloader:
         url: str,
         workdir: Path,
         title: str,
-        language: str,
     ) -> SubtitleDownloadResult:
         try:
             from faster_whisper import WhisperModel
@@ -137,7 +129,6 @@ class YouTubeSubtitleDownloader:
                 raise RuntimeError("Audio download failed; cannot transcribe without audio.")
             audio_path = audio_files[0]
 
-        whisper_lang = language.split("-")[0]
         device, compute_type = self._resolve_device()
 
         import os
@@ -152,13 +143,15 @@ class YouTubeSubtitleDownloader:
                 os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
 
         model = WhisperModel(self.whisper_model, device=device, compute_type=compute_type)
-        segments, _info = model.transcribe(str(audio_path), language=whisper_lang, vad_filter=True)
+        segments, info = model.transcribe(
+            str(audio_path), language=None, task="transcribe", vad_filter=True,
+        )
 
         vtt_path = workdir / "subtitles.vtt"
         vtt_path.write_text(self._segments_to_vtt(segments), encoding="utf-8")
         audio_path.unlink(missing_ok=True)
 
-        return SubtitleDownloadResult(title, vtt_path, workdir / "transcript.json", "transcribed", language)
+        return SubtitleDownloadResult(title, vtt_path, workdir / "transcript.json", "transcribed", info.language)
 
     def _resolve_device(self) -> tuple[str, str]:
         if self.whisper_device != "auto":

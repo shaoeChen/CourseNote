@@ -63,7 +63,7 @@ CourseNote 是一個本地端 CLI 工具，用來把 YouTube 課程影片整理�
 
 - 下載 YouTube 影片、字幕與中繼資料
 - 可單獨下載字幕並輸出逐字稿 JSON
-- 優先使用原生字幕，次選自動字幕；沒有字幕時直接失敗
+- 優先使用原生字幕，次選自動字幕；可用 `--transcribe-fallback` 在沒有符合語言的字幕時，從音軌自動辨識原語言並轉錄
 - 使用 PySceneDetect 做 scene detection
 - 依場景切段，並擷取每段代表截圖
 - 將逐段字幕改寫成結構化 Markdown 筆記
@@ -265,6 +265,27 @@ course-note download-subtitles "https://www.youtube.com/watch?v=2rcJdFuNbZQ" `
   --subtitle-lang zh-TW `
   --workdir workdir
 ```
+
+#### 沒有字幕時從音軌轉錄
+
+`generate` 與 `download-subtitles` 都支援 `--transcribe-fallback`（需安裝 `pip install -e ".[whisper]"`）。當沒有符合 `--subtitle-lang` 的原生或自動字幕時，會下載音軌並用 faster-whisper **自動偵測音訊語言，保留原語言逐字稿**。這也符合 [faster-whisper 的自動語言偵測用法](https://github.com/SYSTRAN/faster-whisper#usage)。
+
+- `--subtitle-lang en`：優先取得英文字幕；只影響下載字軌，不會強迫音軌使用英文或中文辨識，也不控制筆記輸出語言。
+- `--transcribe-fallback`：找不到指定語言的字幕時才轉錄音軌；未指定此旗標則失敗。
+- `--whisper-model small`、`--whisper-device auto`：分別設定轉錄模型與執行裝置，這兩個值也是預設值。
+- `subtitles.vtt` 保留原語言，`transcript.json` 的 `lang` 和中繼資料的 `subtitle_language` 記錄偵測語言；`subtitle_requested_language` 則記錄下載字軌的偏好。後續 LLM 仍會依筆記風格整理成繁體中文。
+
+英文課程範例（PowerShell）：
+
+```powershell
+course-note download-subtitles "https://www.youtube.com/watch?v=-Ggc37xLj_Y" `
+  --course-name "Stanford CS329A Self-Improving AI Agents | Part 2 | Test-Time Compute Scaling" `
+  --subtitle-lang en `
+  --transcribe-fallback `
+  --workdir workdir
+```
+
+舊版標示為 `transcribed`、但沒有 `subtitle_requested_language` 的字幕快取，會在下次 `generate` 或 `download-subtitles` 時重新取得，避免繼續沿用錯誤的語言設定，不需手動刪檔。仍須加上 `--transcribe-fallback` 才能在沒有字幕時轉錄。只重跑 `download-subtitles` 會更新字幕、逐字稿與中繼資料；已有的 `segments.json` 和 `article.md` 需再跑 `generate` 才會使用新逐字稿重建，`rewrite-notes` 仍使用原本的分段逐字稿。
 
 ### `rewrite-notes`
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,8 @@ class _FakeLLMService:
         raise AssertionError("extract_key_terms should not be called in this test")
 
 
-def test_generate_impl_reuses_cached_video_and_subtitle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("source,actual_language", [("native", "zh-TW"), ("transcribed", "en")])
+def test_generate_impl_reuses_cached_video_and_subtitle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str, actual_language: str) -> None:
     base_workdir = tmp_path / "workdir"
     course_workdir = resolve_course_workdir(base_workdir, "Demo Course")
     (course_workdir / "subtitles.vtt").write_text(
@@ -52,8 +54,9 @@ def test_generate_impl_reuses_cached_video_and_subtitle(monkeypatch: pytest.Monk
             course_name="Demo Course",
             source_url="https://example.com/watch?v=demo",
             title="Stored Title",
-            subtitle_language="zh-TW",
-            subtitle_source="native",
+            subtitle_language=actual_language,
+            subtitle_source=source,
+            subtitle_requested_language="zh-TW",
         ),
     )
 
@@ -145,6 +148,10 @@ def test_generate_impl_reuses_cached_video_and_subtitle(monkeypatch: pytest.Monk
     assert metadata is not None
     assert metadata.title == "Stored Title"
     assert metadata.source_url == "https://example.com/watch?v=demo"
+    assert metadata.subtitle_language == actual_language
+    assert metadata.subtitle_requested_language == "zh-TW"
+    transcript = json.loads((course_workdir / "transcript.json").read_text(encoding="utf-8"))
+    assert transcript[0]["lang"] == actual_language
 
 
 def test_generate_impl_rejects_reusing_course_name_with_different_url(tmp_path: Path) -> None:
@@ -169,9 +176,12 @@ def test_generate_impl_rejects_reusing_course_name_with_different_url(tmp_path: 
         )
 
 
+@pytest.mark.parametrize("preferred_language,source", [("en", "native"), ("zh-TW", "transcribed")])
 def test_download_subtitles_impl_writes_subtitle_transcript_and_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    preferred_language: str,
+    source: str,
 ) -> None:
     base_workdir = tmp_path / "workdir"
     course_workdir = resolve_course_workdir(base_workdir, "Demo Course")
@@ -180,7 +190,7 @@ def test_download_subtitles_impl_writes_subtitle_transcript_and_metadata(
         def download(self, url: str, workdir: Path, language: str) -> SubtitleDownloadResult:
             assert url == "https://example.com/watch?v=demo"
             assert workdir == course_workdir
-            assert language == "en"
+            assert language == preferred_language
             subtitle_path = workdir / "subtitles.vtt"
             subtitle_path.write_text(
                 "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\nhello world\n",
@@ -190,8 +200,8 @@ def test_download_subtitles_impl_writes_subtitle_transcript_and_metadata(
                 title="Downloaded Title",
                 subtitle_path=subtitle_path,
                 transcript_json_path=workdir / "transcript.json",
-                source="native",
-                language=language,
+                source=source,
+                language="en",
             )
 
     class _FailingVideoDownloader:
@@ -209,7 +219,7 @@ def test_download_subtitles_impl_writes_subtitle_transcript_and_metadata(
     cli_main.download_subtitles_impl(
         url="https://example.com/watch?v=demo",
         course_name="Demo Course",
-        subtitle_lang="en",
+        subtitle_lang=preferred_language,
         workdir=base_workdir,
     )
 
@@ -224,4 +234,46 @@ def test_download_subtitles_impl_writes_subtitle_transcript_and_metadata(
     assert metadata.source_url == "https://example.com/watch?v=demo"
     assert metadata.title == "Downloaded Title"
     assert metadata.subtitle_language == "en"
-    assert metadata.subtitle_source == "native"
+    assert metadata.subtitle_source == source
+    assert metadata.subtitle_requested_language == preferred_language
+
+    # The detected language differs from the preferred track language, but the
+    # next invocation must reuse this corrected transcription with its real tag.
+    monkeypatch.setattr(cli_main, "YouTubeSubtitleDownloader", lambda **kwargs: pytest.fail("should reuse cache"))
+    cli_main.download_subtitles_impl(
+        url="https://example.com/watch?v=demo", course_name="Demo Course",
+        subtitle_lang=preferred_language, workdir=base_workdir,
+    )
+    transcript = json.loads((course_workdir / "transcript.json").read_text(encoding="utf-8"))
+    assert transcript[0]["lang"] == "en"
+
+
+def test_legacy_transcribed_cache_is_regenerated(monkeypatch, tmp_path):
+    metadata = CourseWorkspaceMetadata(
+        course_name="Demo", source_url="url", title="Demo",
+        subtitle_language="zh-TW", subtitle_source="transcribed",
+    )
+    (tmp_path / "subtitles.vtt").write_text("incorrect old transcription", encoding="utf-8")
+    expected = SubtitleDownloadResult("Demo", tmp_path / "subtitles.vtt", tmp_path / "transcript.json", "transcribed", "en")
+    calls = []
+
+    class Downloader:
+        def download(self, url, workdir, language):
+            calls.append((url, workdir, language))
+            return expected
+
+    monkeypatch.setattr(cli_main, "YouTubeSubtitleDownloader", lambda **kwargs: Downloader())
+    result = cli_main._load_or_download_subtitles(
+        url="url", workdir=tmp_path, subtitle_lang="zh-TW", course_name="Demo",
+        metadata=metadata, transcribe_fallback=True,
+    )
+    assert calls == [("url", tmp_path, "zh-TW")]
+    assert result is expected
+
+
+def test_corrected_transcribed_cache_respects_changed_track_preference():
+    metadata = CourseWorkspaceMetadata(
+        course_name="Demo", source_url="url", title="Demo",
+        subtitle_language="en", subtitle_source="transcribed", subtitle_requested_language="zh-TW",
+    )
+    assert cli_main._can_reuse_subtitles(metadata, "en") is False

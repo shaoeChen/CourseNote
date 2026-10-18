@@ -216,3 +216,6 @@ output*.md
 
 # Qwen session scratch files
 /.qwen/tmp/
+
+# Local Windows ACL recovery artifacts
+/.acl-recovery/

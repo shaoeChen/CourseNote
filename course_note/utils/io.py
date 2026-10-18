@@ -17,6 +17,7 @@ class CourseWorkspaceMetadata:
     title: str
     subtitle_language: str | None = None
     subtitle_source: str | None = None
+    subtitle_requested_language: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -25,6 +26,7 @@ class CourseWorkspaceMetadata:
             "title": self.title,
             "subtitle_language": self.subtitle_language,
             "subtitle_source": self.subtitle_source,
+            "subtitle_requested_language": self.subtitle_requested_language,
         }
 
 
@@ -60,6 +62,7 @@ def load_course_workspace_metadata(workdir: Path) -> CourseWorkspaceMetadata | N
         title=str(payload["title"]),
         subtitle_language=str(payload["subtitle_language"]) if payload.get("subtitle_language") else None,
         subtitle_source=str(payload["subtitle_source"]) if payload.get("subtitle_source") else None,
+        subtitle_requested_language=str(payload["subtitle_requested_language"]) if payload.get("subtitle_requested_language") else None,
     )
 
 
