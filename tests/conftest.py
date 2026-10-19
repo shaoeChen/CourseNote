@@ -29,3 +29,12 @@ def isolate_configuration_environment() -> Iterator[None]:
         for key in _configuration_keys():
             os.environ.pop(key, None)
         os.environ.update(original)
+
+
+@pytest.fixture(autouse=True)
+def isolate_config_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Keep a developer's ./course-note.toml from changing CLI defaults in tests."""
+    from course_note.cli import config as cli_config
+
+    missing = tmp_path_factory.mktemp("no-config") / cli_config.CONFIG_FILENAME
+    monkeypatch.setattr(cli_config, "default_config_path", lambda: missing)

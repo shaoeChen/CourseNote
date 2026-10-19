@@ -7,6 +7,19 @@ import re
 from pathlib import Path
 from typing import Any
 
+from course_note.cli.config import (
+    GENERATE_DEFAULTS,
+    QUEUE_DEFAULTS,
+    load_config,
+    resolve_options,
+)
+from course_note.cli.queue import (
+    QueueItem,
+    format_queue_summary,
+    parse_queue_file,
+    queue_lock,
+    run_queue,
+)
 from course_note.hackmd import HackMDPublisher
 from course_note.llm.service import LLMService
 from course_note.models import CourseNote, SlideSegment, TranscriptSegment
@@ -20,6 +33,7 @@ from course_note.subtitle.parser import SubtitleParser
 from course_note.utils.env import load_env_file
 from course_note.utils.io import (
     CourseWorkspaceMetadata,
+    find_course_workspace_by_url,
     load_course_workspace_metadata,
     resolve_course_workdir,
     sanitize_course_name,
@@ -28,6 +42,7 @@ from course_note.utils.io import (
 )
 from course_note.utils.timefmt import scene_frame_filename
 from course_note.video.downloader import VideoDownloader
+from course_note.video.info import fetch_video_title
 from course_note.video.frames import FrameSampler
 
 HAS_TYPER = importlib.util.find_spec("typer") is not None
@@ -41,7 +56,7 @@ ARTICLE_FILENAME = "article.md"
 
 GENERATE_HELP = {
     "url": "Course video URL.",
-    "course_name": "Required course identifier. The same course name reuses the same per-course workspace under --workdir.",
+    "course_name": "Course identifier; the same name reuses the same per-course workspace under --workdir. Defaults to the existing workspace bound to this URL, otherwise the video title.",
     "subtitle_lang": "Preferred subtitle track language, for example zh-TW or en. Audio transcription detects its language automatically; note output remains Traditional Chinese.",
     "sample_interval": "How many seconds before each segment end to capture the representative frame. A value of 1 means capture near the segment end, not near the segment start.",
     "scene_threshold": "PySceneDetect content threshold. Lower values split scenes more aggressively, higher values require larger visual changes.",
@@ -61,6 +76,14 @@ GENERATE_HELP = {
     "whisper_model": "faster-whisper model name used by --transcribe-fallback, for example small, medium, or large-v3.",
     "whisper_device": "faster-whisper device: auto (CUDA if available), cuda, or cpu.",
     "workdir": "Base working directory that stores per-course subfolders and intermediate artifacts.",
+    "config": "Settings file whose generate table supplies defaults for options not passed on the command line. Defaults to ./course-note.toml when it exists.",
+}
+
+QUEUE_HELP = {
+    "queue_file": "Text file with one URL per line, optionally followed by whitespace and a course name; blank lines and # comments are ignored.",
+    "config": "Settings file whose generate table applies to every video and whose queue table sets queue options. Defaults to ./course-note.toml when it exists.",
+    "delay_seconds": "Pause between videos that were actually processed, to avoid hammering YouTube. Defaults to delay_seconds in the queue table, or 30.",
+    "stop_on_error": "Stop at the first failed video instead of continuing with the rest of the queue.",
 }
 
 REWRITE_HELP = {
@@ -95,7 +118,7 @@ PUBLISH_HELP = {
 
 def generate_impl(
     url: str,
-    course_name: str,
+    course_name: str | None = None,
     subtitle_lang: str = "zh-TW",
     sample_interval: float = 1.0,
     scene_threshold: float = 27.0,
@@ -117,6 +140,7 @@ def generate_impl(
     vision_timeout_seconds: int | None = None,
 ) -> None:
     _validate_slide_options(scene_mode, vision_backend, vision_timeout_seconds)
+    course_name = resolve_course_name(url, course_name, workdir)
     workdir = resolve_course_workdir(workdir, course_name)
     metadata = load_course_workspace_metadata(workdir)
     _validate_course_workspace(metadata, course_name=course_name, url=url, workdir=workdir)
@@ -216,6 +240,86 @@ def generate_impl(
         typer.echo(message)
     else:
         print(message)
+
+
+def resolve_course_name(url: str, course_name: str | None, workdir: Path) -> str:
+    """Use the explicit name, else the workspace already bound to url, else the video title."""
+    if course_name:
+        return course_name
+    existing = find_course_workspace_by_url(workdir, url)
+    if existing is not None:
+        print(f"未指定 --course-name，沿用此網址既有的課程工作區：{existing.course_name}", flush=True)
+        return existing.course_name
+    title = fetch_video_title(url)
+    print(f"未指定 --course-name，使用影片標題：{title}", flush=True)
+    return title
+
+
+def generate_from_cli(
+    url: str, course_name: str | None, config: Path | None, **cli_values: Any,
+) -> None:
+    """Merge CLI flags (None = not passed) over course-note.toml and built-in defaults."""
+    settings = load_config(config)
+    options = resolve_options(cli_values, settings.get("generate", {}), GENERATE_DEFAULTS)
+    generate_impl(url=url, course_name=course_name, **options)
+
+
+def queue_impl(
+    queue_file: Path = Path("queue.txt"),
+    config: Path | None = None,
+    delay_seconds: float | None = None,
+    stop_on_error: bool | None = None,
+) -> None:
+    """Run generate for each queued URL, strictly one video at a time."""
+    settings = load_config(config)
+    options = resolve_options({}, settings.get("generate", {}), GENERATE_DEFAULTS)
+    queue_options = resolve_options(
+        {"delay_seconds": delay_seconds, "stop_on_error": stop_on_error},
+        settings.get("queue", {}),
+        QUEUE_DEFAULTS,
+    )
+    if queue_options["delay_seconds"] < 0:
+        raise ValueError("--delay-seconds must not be negative.")
+    items = parse_queue_file(queue_file)
+    if not items:
+        print(f"{queue_file} 沒有待處理的網址。", flush=True)
+        return
+    base_workdir: Path = options["workdir"]
+
+    def process(item: QueueItem) -> bool:
+        done = _completed_course_name(base_workdir, item)
+        if done is not None:
+            print(f"[QUEUE] 已有 article.md，略過：{done}", flush=True)
+            return False
+        generate_impl(url=item.url, course_name=item.course_name, **options)
+        return True
+
+    print(f"[QUEUE] 共 {len(items)} 筆，依序逐部處理（不平行）。", flush=True)
+    with queue_lock(base_workdir):
+        result = run_queue(
+            items,
+            process=process,
+            delay_seconds=queue_options["delay_seconds"],
+            stop_on_error=queue_options["stop_on_error"],
+        )
+    print(format_queue_summary(result, len(items)), flush=True)
+    if result.failed:
+        raise SystemExit(1)
+
+
+def _completed_course_name(base_workdir: Path, item: QueueItem) -> str | None:
+    """Return the course name when this queue item already has a generated article."""
+    if item.course_name:
+        course_dir = base_workdir / sanitize_course_name(item.course_name)
+        metadata = load_course_workspace_metadata(course_dir) if course_dir.is_dir() else None
+        if metadata is None or metadata.source_url != item.url:
+            return None
+    else:
+        metadata = find_course_workspace_by_url(base_workdir, item.url)
+        if metadata is None:
+            return None
+        course_dir = base_workdir / sanitize_course_name(metadata.course_name)
+    return metadata.course_name if (course_dir / ARTICLE_FILENAME).is_file() else None
 
 
 def _validate_slide_options(
@@ -688,30 +792,33 @@ if HAS_TYPER:
     @app.command()
     def generate(
         url: str = typer.Argument(..., help=GENERATE_HELP["url"]),
-        course_name: str = typer.Option(..., help=GENERATE_HELP["course_name"]),
-        subtitle_lang: str = typer.Option("zh-TW", help=GENERATE_HELP["subtitle_lang"]),
-        sample_interval: float = typer.Option(1.0, help=GENERATE_HELP["sample_interval"]),
-        scene_threshold: float = typer.Option(27.0, help=GENERATE_HELP["scene_threshold"]),
-        min_segment_seconds: int = typer.Option(20, help=GENERATE_HELP["min_segment_seconds"]),
-        scene_edge_weight: float = typer.Option(0.0, help=GENERATE_HELP["scene_edge_weight"]),
-        scene_mode: str = typer.Option("algorithm", help=GENERATE_HELP["scene_mode"]),
+        course_name: str | None = typer.Option(None, help=GENERATE_HELP["course_name"]),
+        config: Path | None = typer.Option(None, help=GENERATE_HELP["config"]),
+        subtitle_lang: str | None = typer.Option(None, help=GENERATE_HELP["subtitle_lang"]),
+        sample_interval: float | None = typer.Option(None, help=GENERATE_HELP["sample_interval"]),
+        scene_threshold: float | None = typer.Option(None, help=GENERATE_HELP["scene_threshold"]),
+        min_segment_seconds: int | None = typer.Option(None, help=GENERATE_HELP["min_segment_seconds"]),
+        scene_edge_weight: float | None = typer.Option(None, help=GENERATE_HELP["scene_edge_weight"]),
+        scene_mode: str | None = typer.Option(None, help=GENERATE_HELP["scene_mode"]),
         vision_backend: str | None = typer.Option(None, help=GENERATE_HELP["vision_backend"]),
         vision_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["vision_timeout_seconds"]),
         llm_backend: str | None = typer.Option(None, help=GENERATE_HELP["llm_backend"]),
         llm_timeout_seconds: int | None = typer.Option(None, help=GENERATE_HELP["llm_timeout_seconds"]),
-        note_style: str = typer.Option("summary", help=GENERATE_HELP["note_style"]),
-        with_course_summary: bool = typer.Option(False, help=GENERATE_HELP["with_course_summary"]),
-        with_key_terms: bool = typer.Option(False, help=GENERATE_HELP["with_key_terms"]),
-        include_extra_notes: bool = typer.Option(False, help=GENERATE_HELP["include_extra_notes"]),
-        include_transcript: bool = typer.Option(False, help=GENERATE_HELP["include_transcript"]),
-        transcribe_fallback: bool = typer.Option(False, help=GENERATE_HELP["transcribe_fallback"]),
-        whisper_model: str = typer.Option("small", help=GENERATE_HELP["whisper_model"]),
-        whisper_device: str = typer.Option("auto", help=GENERATE_HELP["whisper_device"]),
-        workdir: Path = typer.Option(Path("workdir"), help=GENERATE_HELP["workdir"]),
+        note_style: str | None = typer.Option(None, help=GENERATE_HELP["note_style"]),
+        with_course_summary: bool | None = typer.Option(None, help=GENERATE_HELP["with_course_summary"]),
+        with_key_terms: bool | None = typer.Option(None, help=GENERATE_HELP["with_key_terms"]),
+        include_extra_notes: bool | None = typer.Option(None, help=GENERATE_HELP["include_extra_notes"]),
+        include_transcript: bool | None = typer.Option(None, help=GENERATE_HELP["include_transcript"]),
+        transcribe_fallback: bool | None = typer.Option(None, help=GENERATE_HELP["transcribe_fallback"]),
+        whisper_model: str | None = typer.Option(None, help=GENERATE_HELP["whisper_model"]),
+        whisper_device: str | None = typer.Option(None, help=GENERATE_HELP["whisper_device"]),
+        workdir: Path | None = typer.Option(None, help=GENERATE_HELP["workdir"]),
     ) -> None:
-        generate_impl(
+        """Run the full pipeline. Unpassed options come from course-note.toml, then built-in defaults."""
+        generate_from_cli(
             url=url,
             course_name=course_name,
+            config=config,
             subtitle_lang=subtitle_lang,
             sample_interval=sample_interval,
             scene_threshold=scene_threshold,
@@ -732,6 +839,16 @@ if HAS_TYPER:
             whisper_device=whisper_device,
             workdir=workdir,
         )
+
+    @app.command("queue")
+    def queue(
+        queue_file: Path = typer.Argument(Path("queue.txt"), help=QUEUE_HELP["queue_file"]),
+        config: Path | None = typer.Option(None, help=QUEUE_HELP["config"]),
+        delay_seconds: float | None = typer.Option(None, help=QUEUE_HELP["delay_seconds"]),
+        stop_on_error: bool | None = typer.Option(None, help=QUEUE_HELP["stop_on_error"]),
+    ) -> None:
+        """Generate notes for every URL in a queue file, one video at a time."""
+        queue_impl(queue_file=queue_file, config=config, delay_seconds=delay_seconds, stop_on_error=stop_on_error)
 
     @app.command("detect-slides")
     def detect_slides(
@@ -818,26 +935,32 @@ else:
         subparsers = parser.add_subparsers(dest="command", required=True)
         generate_parser = subparsers.add_parser("generate", help="Run the full video-to-notes pipeline.")
         generate_parser.add_argument("url", help=GENERATE_HELP["url"])
-        generate_parser.add_argument("--course-name", required=True, help=GENERATE_HELP["course_name"])
-        generate_parser.add_argument("--subtitle-lang", default="zh-TW", help=GENERATE_HELP["subtitle_lang"])
-        generate_parser.add_argument("--sample-interval", type=float, default=1.0, help=GENERATE_HELP["sample_interval"])
-        generate_parser.add_argument("--scene-threshold", type=float, default=27.0, help=GENERATE_HELP["scene_threshold"])
-        generate_parser.add_argument("--min-segment-seconds", type=int, default=20, help=GENERATE_HELP["min_segment_seconds"])
-        generate_parser.add_argument("--scene-edge-weight", type=float, default=0.0, help=GENERATE_HELP["scene_edge_weight"])
-        generate_parser.add_argument("--scene-mode", choices=("algorithm", "hybrid", "reviewed"), default="algorithm", help=GENERATE_HELP["scene_mode"])
+        generate_parser.add_argument("--course-name", help=GENERATE_HELP["course_name"])
+        generate_parser.add_argument("--config", type=Path, help=GENERATE_HELP["config"])
+        generate_parser.add_argument("--subtitle-lang", help=GENERATE_HELP["subtitle_lang"])
+        generate_parser.add_argument("--sample-interval", type=float, help=GENERATE_HELP["sample_interval"])
+        generate_parser.add_argument("--scene-threshold", type=float, help=GENERATE_HELP["scene_threshold"])
+        generate_parser.add_argument("--min-segment-seconds", type=int, help=GENERATE_HELP["min_segment_seconds"])
+        generate_parser.add_argument("--scene-edge-weight", type=float, help=GENERATE_HELP["scene_edge_weight"])
+        generate_parser.add_argument("--scene-mode", choices=("algorithm", "hybrid", "reviewed"), help=GENERATE_HELP["scene_mode"])
         generate_parser.add_argument("--vision-backend", help=GENERATE_HELP["vision_backend"])
         generate_parser.add_argument("--vision-timeout-seconds", type=int, help=GENERATE_HELP["vision_timeout_seconds"])
         generate_parser.add_argument("--llm-backend", help=GENERATE_HELP["llm_backend"])
         generate_parser.add_argument("--llm-timeout-seconds", type=int, help=GENERATE_HELP["llm_timeout_seconds"])
-        generate_parser.add_argument("--note-style", default="summary", help=GENERATE_HELP["note_style"])
-        generate_parser.add_argument("--with-course-summary", action="store_true", help=GENERATE_HELP["with_course_summary"])
-        generate_parser.add_argument("--with-key-terms", action="store_true", help=GENERATE_HELP["with_key_terms"])
-        generate_parser.add_argument("--include-extra-notes", action="store_true", help=GENERATE_HELP["include_extra_notes"])
-        generate_parser.add_argument("--include-transcript", action="store_true", help=GENERATE_HELP["include_transcript"])
-        generate_parser.add_argument("--transcribe-fallback", action="store_true", help=GENERATE_HELP["transcribe_fallback"])
-        generate_parser.add_argument("--whisper-model", default="small", help=GENERATE_HELP["whisper_model"])
-        generate_parser.add_argument("--whisper-device", default="auto", help=GENERATE_HELP["whisper_device"])
-        generate_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
+        generate_parser.add_argument("--note-style", help=GENERATE_HELP["note_style"])
+        generate_parser.add_argument("--with-course-summary", action=argparse.BooleanOptionalAction, help=GENERATE_HELP["with_course_summary"])
+        generate_parser.add_argument("--with-key-terms", action=argparse.BooleanOptionalAction, help=GENERATE_HELP["with_key_terms"])
+        generate_parser.add_argument("--include-extra-notes", action=argparse.BooleanOptionalAction, help=GENERATE_HELP["include_extra_notes"])
+        generate_parser.add_argument("--include-transcript", action=argparse.BooleanOptionalAction, help=GENERATE_HELP["include_transcript"])
+        generate_parser.add_argument("--transcribe-fallback", action=argparse.BooleanOptionalAction, help=GENERATE_HELP["transcribe_fallback"])
+        generate_parser.add_argument("--whisper-model", help=GENERATE_HELP["whisper_model"])
+        generate_parser.add_argument("--whisper-device", help=GENERATE_HELP["whisper_device"])
+        generate_parser.add_argument("--workdir", type=Path, help=GENERATE_HELP["workdir"])
+        queue_parser = subparsers.add_parser("queue", help="Generate notes for every URL in a queue file, one at a time.")
+        queue_parser.add_argument("queue_file", nargs="?", type=Path, default=Path("queue.txt"), help=QUEUE_HELP["queue_file"])
+        queue_parser.add_argument("--config", type=Path, help=QUEUE_HELP["config"])
+        queue_parser.add_argument("--delay-seconds", type=float, help=QUEUE_HELP["delay_seconds"])
+        queue_parser.add_argument("--stop-on-error", action=argparse.BooleanOptionalAction, help=QUEUE_HELP["stop_on_error"])
         slides_parser = subparsers.add_parser("detect-slides", help="Preview slide pages from a cached course video.")
         slides_parser.add_argument("--course-name", required=True, help=GENERATE_HELP["course_name"])
         slides_parser.add_argument("--workdir", type=Path, default=Path("workdir"), help=GENERATE_HELP["workdir"])
@@ -878,28 +1001,18 @@ else:
         parser = _build_argparse()
         args = parser.parse_args()
         if args.command == "generate":
-            generate_impl(
+            generate_from_cli(
                 url=args.url,
                 course_name=args.course_name,
-                subtitle_lang=args.subtitle_lang,
-                sample_interval=args.sample_interval,
-                scene_threshold=args.scene_threshold,
-                min_segment_seconds=args.min_segment_seconds,
-                scene_edge_weight=args.scene_edge_weight,
-                scene_mode=args.scene_mode,
-                vision_backend=args.vision_backend,
-                vision_timeout_seconds=args.vision_timeout_seconds,
-                llm_backend=args.llm_backend,
-                llm_timeout_seconds=args.llm_timeout_seconds,
-                note_style=args.note_style,
-                with_course_summary=args.with_course_summary,
-                with_key_terms=args.with_key_terms,
-                include_extra_notes=args.include_extra_notes,
-                include_transcript=args.include_transcript,
-                transcribe_fallback=args.transcribe_fallback,
-                whisper_model=args.whisper_model,
-                whisper_device=args.whisper_device,
-                workdir=args.workdir,
+                config=args.config,
+                **{key: getattr(args, key) for key in GENERATE_DEFAULTS},
+            )
+        if args.command == "queue":
+            queue_impl(
+                queue_file=args.queue_file,
+                config=args.config,
+                delay_seconds=args.delay_seconds,
+                stop_on_error=args.stop_on_error,
             )
         if args.command == "detect-slides":
             detect_slides_impl(

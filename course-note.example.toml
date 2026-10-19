@@ -1,0 +1,25 @@
+# 複製成 course-note.toml 後修改。放在執行 course-note 的目錄即可自動套用，
+# 或用 --config 指定其他檔案。命令列有傳的參數一律優先於這裡的設定。
+# 鍵名同 CLI 參數，把開頭的 -- 去掉；底線或連字號皆可。
+
+[generate]
+subtitle_lang = "zh-TW"
+sample_interval = 1
+scene_threshold = 15
+scene_edge_weight = 0.3
+min_segment_seconds = 20
+workdir = "workdir"
+note_style = "near_transcript"
+with_key_terms = true
+transcribe_fallback = true
+whisper_device = "cpu"
+# with_course_summary = false
+# include_transcript = false
+# llm_backend = "deepseek"
+# llm_timeout_seconds = 300
+
+[queue]
+# 每部影片實際處理完後，等待幾秒再開始下一部（已完成而略過的不等待）。
+delay_seconds = 30
+# true：任一部失敗就停止；false：記錄失敗，繼續下一部。
+stop_on_error = false

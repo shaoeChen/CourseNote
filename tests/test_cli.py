@@ -121,19 +121,16 @@ def test_generate_subcommand_rejects_removed_model_option() -> None:
     )
 
 
-def test_generate_subcommand_requires_course_name() -> None:
+def test_generate_subcommand_course_name_is_optional(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = CliRunner()
+    captured: dict[str, object] = {}
 
-    result = runner.invoke(
-        cli_main.app,
-        [
-            "generate",
-            "https://example.com/watch?v=demo",
-        ],
-    )
+    monkeypatch.setattr(cli_main, "generate_impl", lambda **kwargs: captured.update(kwargs))
 
-    assert result.exit_code != 0
-    assert "--course-name" in result.output
+    result = runner.invoke(cli_main.app, ["generate", "https://example.com/watch?v=demo"])
+
+    assert result.exit_code == 0
+    assert captured["course_name"] is None
 
 
 def test_download_subtitles_subcommand_accepts_url_and_course_name(monkeypatch: pytest.MonkeyPatch) -> None:

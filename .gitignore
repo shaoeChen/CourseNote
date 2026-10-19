@@ -219,3 +219,7 @@ output*.md
 
 # Local Windows ACL recovery artifacts
 /.acl-recovery/
+
+# Personal CLI defaults and download queue (see *.example files)
+/course-note.toml
+/queue.txt

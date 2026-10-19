@@ -72,3 +72,14 @@ def write_course_workspace_metadata(workdir: Path, metadata: CourseWorkspaceMeta
 
 def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def find_course_workspace_by_url(base_path: Path, url: str) -> CourseWorkspaceMetadata | None:
+    """Return the metadata of an existing course workspace bound to ``url``."""
+    if not base_path.is_dir():
+        return None
+    for metadata_path in sorted(base_path.glob(f"*/{COURSE_METADATA_FILENAME}")):
+        metadata = load_course_workspace_metadata(metadata_path.parent)
+        if metadata is not None and metadata.source_url == url:
+            return metadata
+    return None

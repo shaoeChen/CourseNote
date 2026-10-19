@@ -69,6 +69,8 @@ CourseNote 是一個本地端 CLI 工具，用來把 YouTube 課程影片整理�
 - 將逐段字幕改寫成結構化 Markdown 筆記
 - 可額外產生課程摘要與關鍵詞
 - 可將產出的 Markdown 發布到 HackMD
+- 用 `course-note.toml` 記住常用參數；未指定 `--course-name` 時自動使用影片標題
+- 用 `queue.txt` 一次排入多部影片，逐部依序處理（不平行，降低被 YouTube 封鎖的風險）
 
 ## 安裝
 
@@ -158,13 +160,97 @@ COURSE_NOTE_CLINEPASS_MODEL=cline-pass/deepseek-v4-flash
 COURSE_NOTE_LLAMACPP_API_BASE=http://127.0.0.1:8080/v1
 ```
 
+## 快速開始：設定檔與批次佇列
+
+### 1. 用 `course-note.toml` 記住常用參數
+
+把專案內的範例複製成 `course-note.toml`，放在執行 `course-note` 的目錄（通常就是專案根目錄）：
+
+```powershell
+Copy-Item course-note.example.toml course-note.toml
+```
+
+```toml
+[generate]
+subtitle_lang = "zh-TW"
+sample_interval = 1
+scene_threshold = 15
+scene_edge_weight = 0.3
+min_segment_seconds = 20
+workdir = "workdir"
+note_style = "near_transcript"
+with_key_terms = true
+transcribe_fallback = true
+whisper_device = "cpu"
+
+[queue]
+delay_seconds = 30
+stop_on_error = false
+```
+
+- 鍵名與 `generate` 的參數相同，去掉開頭的 `--`，底線或連字號皆可（`scene_edge_weight` 或 `scene-edge-weight`）。
+- 優先順序：**命令列參數 > `course-note.toml` > 內建預設值**。例如設定檔寫了 `note_style = "near_transcript"`，單次執行仍可加 `--note-style summary` 覆蓋。
+- 布林值可用 `--no-` 前綴在命令列關閉，例如 `--no-with-key-terms`。
+- 鍵名打錯或型別不符（例如 `with_key_terms = "yes"`）會直接報錯，不會默默忽略。
+- 想用其他設定檔時，加 `--config path/to/file.toml`。
+- `course-note.toml` 與 `queue.txt` 已列入 `.gitignore`，屬於個人設定，不會被提交。
+
+設定檔只影響 `generate` 與 `queue`；`rewrite-notes`、`download-subtitles`、`detect-slides`、`publish-hackmd` 仍使用各自的命令列參數。
+
+### 2. `--course-name` 可以省略
+
+沒有指定 `--course-name` 時，程式依序：
+
+1. 在 `--workdir` 中尋找已綁定同一個網址的課程工作區，有就沿用它的名稱（不會連線）；
+2. 否則用 `yt-dlp` 讀取影片標題作為課程名稱。網址帶有 `&list=...` 時只讀取這一部影片。
+
+標題中 Windows 不允許的字元（如 `| / :`）會在建立資料夾時換成 `-`。所以有了設定檔之後，最常用的指令就只剩：
+
+```powershell
+course-note generate "https://www.youtube.com/watch?v=Lxh9RF5S-K0"
+```
+
+注意：網址比對是完全比對，`https://youtu.be/xxx` 與 `https://www.youtube.com/watch?v=xxx` 會被視為不同網址。同一部影片請固定使用同一種寫法，否則會因「工作區已綁定其他網址」而報錯。
+
+### 3. 用 `queue.txt` 一次排入多部影片
+
+```powershell
+Copy-Item queue.example.txt queue.txt
+```
+
+`queue.txt` 每行一部影片：網址，可在空白後接課程名稱；省略名稱時自動使用影片標題。空行與 `#` 開頭的行會被忽略。課程名稱中可以包含 `|`。
+
+```text
+# Stanford CS329A
+https://www.youtube.com/watch?v=Lxh9RF5S-K0
+https://www.youtube.com/watch?v=fDQaadKysSA  加快語言模型生成速度 (2/2)：KV Cache
+```
+
+執行（預設讀取目前目錄的 `queue.txt`，也可以傳入其他檔名）：
+
+```powershell
+course-note queue
+course-note queue cs329a.txt
+```
+
+行為：
+
+- **嚴格逐部執行，不平行處理。** 每部影片完整跑完 `generate` 才開始下一部。
+- 每部影片實際處理後會等待 `delay_seconds` 秒（預設 30）再處理下一部，避免連續請求 YouTube；可用 `--delay-seconds` 單次覆蓋。
+- 同一個 `--workdir` 同時只允許一個 queue 執行。執行期間會建立 `workdir/.queue.lock`，第二個 queue 會直接拒絕啟動。若程序被強制結束而留下鎖檔，確認沒有 queue 在跑之後，手動刪除即可。
+- 已經產生 `article.md` 的影片會自動略過，不等待也不連線；所以中斷後直接重跑同一個 `queue.txt` 即可接續。若要重新產生某部影片，刪除它的 `article.md`，或改用 `generate` 單獨執行。
+- 未完成的影片重跑時，會沿用已下載的字幕與影片快取。
+- 某部影片失敗時，預設記錄錯誤並繼續下一部；最後列出成功、略過、失敗的筆數與失敗原因，有失敗時結束代碼為 1。想在第一個錯誤就停止，用 `--stop-on-error` 或在設定檔寫 `stop_on_error = true`。
+- 所有影片都套用 `course-note.toml` 的 `[generate]` 設定。需要不同參數的影片，請改用 `generate` 單獨執行。
+- queue 只產生筆記，不會自動發布到 HackMD。
+
 ## CLI
 
-以下範例使用 `.env` 內設定的預設 provider 與 model。
+以下範例使用 `.env` 內設定的預設 provider 與 model。下列範例都把參數寫完整；若已設定 `course-note.toml`，與設定檔相同的參數都可以省略。
 
 ### `generate`
 
-`generate` 會固定輸出到 `workdir/<course-name>/article.md`；目前沒有 `--output` 參數。若要改變輸出根目錄，請使用 `--workdir`。
+`generate` 會固定輸出到 `workdir/<course-name>/article.md`；目前沒有 `--output` 參數。若要改變輸出根目錄，請使用 `--workdir`。`--course-name` 可省略，規則見〈`--course-name` 可以省略〉。
 
 `bash`：
 
@@ -544,8 +630,23 @@ workdir/
 ```
 
 ## 常用
-李宏毅教授課程：
+
+李宏毅教授課程與 Stanford 課程的常用參數已寫在 `course-note.example.toml`。複製成 `course-note.toml` 後：
+
+```powershell
+# 單一影片
+course-note generate "https://www.youtube.com/watch?v=fDQaadKysSA"
+
+# 指定課程名稱
+course-note generate "https://www.youtube.com/watch?v=fDQaadKysSA" --course-name "加快語言模型生成速度 (2/2)：KV Cache"
+
+# 整批：把網址逐行寫進 queue.txt
+course-note queue
 ```
+
+沒有設定檔時，等效的完整指令：
+
+```powershell
 course-note generate "https://www.youtube.com/watch?v=fDQaadKysSA" `
   --course-name "加快語言模型生成速度 (2/2)：KV Cache" `
   --subtitle-lang zh-TW `
@@ -555,5 +656,7 @@ course-note generate "https://www.youtube.com/watch?v=fDQaadKysSA" `
   --min-segment-seconds 20 `
   --workdir workdir `
   --note-style near_transcript `
-  --with-key-terms
+  --with-key-terms `
+  --transcribe-fallback `
+  --whisper-device cpu
 ```

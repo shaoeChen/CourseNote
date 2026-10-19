@@ -1,0 +1,6 @@
+# 複製成 queue.txt 後填入網址，執行：course-note queue
+# 每行一部影片：網址，可選擇在空白後接課程名稱；省略時自動使用影片標題。
+# 空行與 # 開頭的行會被忽略。已經產生 article.md 的影片會自動略過。
+
+https://www.youtube.com/watch?v=Lxh9RF5S-K0
+https://www.youtube.com/watch?v=fDQaadKysSA  加快語言模型生成速度 (2/2)：KV Cache
