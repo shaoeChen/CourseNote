@@ -81,8 +81,69 @@ pip install -e .
 額外需要：
 
 - `yt-dlp`
+- 一個 JavaScript runtime，供 yt-dlp 下載 YouTube 使用，例如 Node.js 20 以上或 deno；設定方式見下一節
 - `ffmpeg`
 - 一個可用的 OpenAI-compatible API，例如 Ollama、llama.cpp server、vLLM、DeepSeek、ClinePass
+
+### 設定 yt-dlp 的 JavaScript runtime（只需設定一次）
+
+YouTube 的影音網址需要先執行一段 JavaScript 驗證，yt-dlp 才能取得可下載的網址。新版 yt-dlp 把這一步交給外部的 JavaScript runtime 執行，**預設只會使用 deno**。
+
+缺少 runtime 時，終端機會出現這個警告：
+
+```text
+WARNING: [youtube] No supported JavaScript runtime could be found. Only deno is enabled by default ...
+```
+
+此時 yt-dlp 會改用不穩定的備用方式，下載影片或音訊時可能**不定時**出現 `ERROR: unable to download video data: HTTP Error 403: Forbidden`。同一個環境前幾部影片成功、之後才失敗，也是這個原因；這不是 IP 被封鎖（被封鎖時通常是 `HTTP Error 429` 或 `Sign in to confirm you're not a bot`）。
+
+擇一處理即可：
+
+**A. 已安裝 Node.js：讓 yt-dlp 改用 node（推薦）**
+
+先確認版本為 20 以上：
+
+```powershell
+node --version
+```
+
+建立 yt-dlp 的使用者設定檔，寫入 `--js-runtimes node`。這個檔案對所有 yt-dlp 指令永久生效（包含 CourseNote 呼叫的），**只需設定一次**，不需要每次執行前重新設定。
+
+Windows PowerShell（檔案位置：`%APPDATA%\yt-dlp\config.txt`）：
+
+```powershell
+New-Item -ItemType Directory -Force "$env:APPDATA\yt-dlp" | Out-Null
+"--js-runtimes node" | Out-File -Encoding ascii "$env:APPDATA\yt-dlp\config.txt"
+```
+
+請使用 `-Encoding ascii`。Windows PowerShell 5.1 的 `-Encoding utf8` 會在檔案開頭寫入 BOM，可能導致 yt-dlp 無法正確讀取設定。
+
+Linux/macOS（檔案位置：`~/.config/yt-dlp/config`）：
+
+```bash
+mkdir -p ~/.config/yt-dlp
+echo "--js-runtimes node" > ~/.config/yt-dlp/config
+```
+
+若原本已有這個設定檔，請把 `--js-runtimes node` 加成新的一行，不要覆蓋原有內容。
+
+**B. 安裝 deno**
+
+deno 是 yt-dlp 預設會使用的 runtime，安裝後不需要任何設定：
+
+```powershell
+winget install DenoLand.Deno
+```
+
+安裝後請重新開啟終端機。
+
+**確認設定生效**
+
+```powershell
+yt-dlp -v -s "https://www.youtube.com/watch?v=Lxh9RF5S-K0"
+```
+
+輸出中出現 `[debug] JS runtimes: node-...`（或 `deno-...`），且沒有上述警告，就代表設定完成。使用 A 方案時，還會看到 `[debug] User config "...config.txt": ['--js-runtimes', 'node']`。
 
 ### 指定 ffmpeg 位置
 
