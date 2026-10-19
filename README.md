@@ -347,6 +347,20 @@ course-note publish-hackmd --course-name "Python 資料分析" --image-dir path/
 HACKMD_API=your_hackmd_token
 ```
 
+## 將筆記製作成互動教學網頁
+
+專案提供 [`course-lesson-page` skill](.claude/skills/course-lesson-page/)，可將 CourseNote 產生的課程筆記整理成單一檔案、可離線開啟的繁體中文互動教材。內容會依概念重組章節，搭配互動示範、圖表、課堂問答、自我檢測與可搜尋的術語表，並支援深淺色與手機閱讀。
+
+請自行下載完整的 `course-lesson-page/` 資料夾（包含 `SKILL.md`、`assets/` 與 `scripts/`），放入所使用 AI 框架對應的 skills 資料夾；實際位置依該框架的設定而定。
+
+先用 CourseNote 產生 `workdir/<課程名稱>/article.md`，並保留同一資料夾內的 `frames/` 與 `course_metadata.json`，讓 AI 能對照投影片與課程來源。載入 skill 後，可以這樣提出需求：
+
+```text
+請使用 course-lesson-page skill，將 workdir/Python 資料分析/ 的課程筆記製作成互動教學網頁。
+```
+
+完成後的教材位於 `workdir/<課程名稱>/lesson.html`，可直接用瀏覽器開啟，不需要啟動伺服器。
+
 ## 切段調參指南
 
 `course-note generate` 的切段效果，主要由這三個參數控制：
