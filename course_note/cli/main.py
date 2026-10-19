@@ -40,6 +40,7 @@ from course_note.utils.io import (
     write_course_workspace_metadata,
     write_json,
 )
+from course_note.utils.progress import progress_stage
 from course_note.utils.timefmt import scene_frame_filename
 from course_note.video.downloader import VideoDownloader
 from course_note.video.info import fetch_video_title
@@ -145,6 +146,7 @@ def generate_impl(
     metadata = load_course_workspace_metadata(workdir)
     _validate_course_workspace(metadata, course_name=course_name, url=url, workdir=workdir)
 
+    print(f"開始產生課程筆記：{course_name}；階段紀錄：{workdir / 'pipeline.log'}", flush=True)
     reviewed_scenes = _load_reviewed_scenes(workdir) if scene_mode == 'reviewed' else None
 
     subtitle_result = _load_or_download_subtitles(
@@ -183,7 +185,8 @@ def generate_impl(
         )
     write_json(workdir / "scenes.json", scenes)
     print(f'Sampling {len(scenes)} representative frames for article generation.', flush=True)
-    FrameSampler().sample_for_scenes(video_path, workdir / "frames", scenes, sample_interval)
+    with progress_stage(f"擷取 {len(scenes)} 張代表畫面", workdir / "pipeline.log"):
+        FrameSampler().sample_for_scenes(video_path, workdir / "frames", scenes, sample_interval)
 
     print('Building subtitle-aligned article segments.', flush=True)
     segments = SegmentBuilder().build(scenes, transcripts, workdir / "frames")
@@ -668,6 +671,7 @@ def _load_or_download_subtitles(
 ) -> SubtitleDownloadResult:
     subtitle_path = workdir / "subtitles.vtt"
     if subtitle_path.exists() and _can_reuse_subtitles(metadata, subtitle_lang):
+        print(f"使用已下載字幕：{subtitle_path}", flush=True)
         return _build_cached_subtitle_result(workdir, subtitle_lang, course_name, metadata)
     subtitle_downloader = YouTubeSubtitleDownloader(
         transcribe_fallback=transcribe_fallback,
@@ -697,6 +701,7 @@ def _build_cached_subtitle_result(
 def _load_or_download_video(url: str, workdir: Path) -> Path:
     video_path = workdir / "video.mp4"
     if video_path.exists():
+        print(f"使用已下載影片：{video_path}", flush=True)
         return video_path
     return VideoDownloader().download(url, workdir)
 

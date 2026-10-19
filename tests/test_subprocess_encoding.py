@@ -38,7 +38,7 @@ def test_command_failure_without_output_preserves_exit_status() -> None:
     assert "exit status 2" in str(caught.value)
 
 
-def test_subtitle_downloader_run_uses_utf8_text_mode(monkeypatch) -> None:
+def test_subtitle_downloader_streams_progress(monkeypatch) -> None:
     recorded: dict[str, object] = {}
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -46,21 +46,15 @@ def test_subtitle_downloader_run_uses_utf8_text_mode(monkeypatch) -> None:
         recorded["kwargs"] = kwargs
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("course_note.subtitle.downloader.run_command", fake_run)
 
     YouTubeSubtitleDownloader._run(["yt-dlp", "--version"])
 
-    assert recorded["command"] == ["yt-dlp", "--version"]
-    assert recorded["kwargs"] == {
-        "check": True,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-    }
+    assert recorded["command"] == ["yt-dlp", "--version", "--newline", "--progress"]
+    assert recorded["kwargs"] == {"stream": True}
 
 
-def test_video_downloader_uses_utf8_text_mode(monkeypatch, tmp_path: Path) -> None:
+def test_video_downloader_streams_progress(monkeypatch, tmp_path: Path) -> None:
     recorded: dict[str, object] = {}
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -68,25 +62,21 @@ def test_video_downloader_uses_utf8_text_mode(monkeypatch, tmp_path: Path) -> No
         recorded["kwargs"] = kwargs
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("course_note.video.downloader.run_command", fake_run)
 
     VideoDownloader().download("https://example.com/video", tmp_path)
 
     assert recorded["command"] == [
         "yt-dlp",
+        "--newline",
+        "--progress",
         "-f",
         "mp4/bestvideo+bestaudio/best",
         "-o",
         str(tmp_path / "video.mp4"),
         "https://example.com/video",
     ]
-    assert recorded["kwargs"] == {
-        "check": True,
-        "capture_output": True,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-    }
+    assert recorded["kwargs"] == {"stream": True}
 
 
 def test_frame_sampler_uses_utf8_text_mode(monkeypatch, tmp_path: Path) -> None:

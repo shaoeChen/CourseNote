@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from course_note.utils.progress import progress_stage
 from course_note.utils.subprocess_utils import run_command
 
 
@@ -35,7 +36,8 @@ class YouTubeSubtitleDownloader:
         workdir: Path,
         language: str,
     ) -> SubtitleDownloadResult:
-        info = self._extract_info(url)
+        with progress_stage("讀取影片資訊", workdir / "pipeline.log"):
+            info = self._extract_info(url)
         title = info.get("title") or "Untitled Course"
 
         native_vtt = self._try_download_subtitles(url, workdir, language, auto=False)
@@ -72,7 +74,9 @@ class YouTubeSubtitleDownloader:
                 "-o", str(subtitle_target),
                 url,
             ]
-            self._run(command)
+            kind = "自動字幕" if auto else "人工字幕"
+            with progress_stage(f"下載{kind}，語言={language}", workdir / "pipeline.log"):
+                self._run(command)
             vtt_files = sorted(
                 Path(temporary_dir).glob("subtitles*.vtt"),
                 key=lambda p: p.stat().st_mtime,
@@ -108,16 +112,17 @@ class YouTubeSubtitleDownloader:
             ) from exc
 
         audio_path = workdir / "audio.m4a"
-        self._run(
-            [
-                "yt-dlp",
-                "-f",
-                "bestaudio[ext=m4a]/bestaudio/best",
-                "-o",
-                str(audio_path),
-                url,
-            ]
-        )
+        with progress_stage("下載音訊（無符合語言的字幕，改用語音轉錄）", workdir / "pipeline.log"):
+            self._run(
+                [
+                    "yt-dlp",
+                    "-f",
+                    "bestaudio[ext=m4a]/bestaudio/best",
+                    "-o",
+                    str(audio_path),
+                    url,
+                ]
+            )
         if not audio_path.exists():
             # 某些來源只有 webm/opus，yt-dlp 自動挑了別種副檔名
             audio_files = sorted(
@@ -142,13 +147,18 @@ class YouTubeSubtitleDownloader:
             if os.path.isdir(p):
                 os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
 
-        model = WhisperModel(self.whisper_model, device=device, compute_type=compute_type)
-        segments, info = model.transcribe(
-            str(audio_path), language=None, task="transcribe", vad_filter=True,
-        )
+        with progress_stage(f"載入語音模型 {self.whisper_model}，device={device}（首次使用可能下載模型）", workdir / "pipeline.log"):
+            model = WhisperModel(self.whisper_model, device=device, compute_type=compute_type)
+        with progress_stage("準備音訊與偵測語言（尚未開始逐段轉錄）", workdir / "pipeline.log"):
+            segments, info = model.transcribe(
+                str(audio_path), language=None, task="transcribe", vad_filter=True,
+                log_progress=True,
+            )
 
-        vtt_path = workdir / "subtitles.vtt"
-        vtt_path.write_text(self._segments_to_vtt(segments), encoding="utf-8")
+        print(f"偵測到音訊語言：{info.language}；開始逐段轉錄。", flush=True)
+        with progress_stage("語音轉錄", workdir / "pipeline.log", interval=None):
+            vtt_path = workdir / "subtitles.vtt"
+            vtt_path.write_text(self._segments_to_vtt(segments), encoding="utf-8")
         audio_path.unlink(missing_ok=True)
 
         return SubtitleDownloadResult(title, vtt_path, workdir / "transcript.json", "transcribed", info.language)
@@ -194,4 +204,4 @@ class YouTubeSubtitleDownloader:
 
     @staticmethod
     def _run(command: list[str]) -> None:
-        run_command(command)
+        run_command([*command, "--newline", "--progress"], stream=True)

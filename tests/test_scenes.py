@@ -65,8 +65,9 @@ def test_detect_converts_seconds_to_frames_and_saves_stats(monkeypatch: pytest.M
         def add_detector(self, detector: FakeContentDetector) -> None:
             captured["detector"] = detector
 
-        def detect_scenes(self, video: _FakeVideo) -> None:
+        def detect_scenes(self, video: _FakeVideo, *, show_progress: bool = False) -> None:
             captured["video"] = video
+            captured["show_progress"] = show_progress
 
         def get_scene_list(self) -> list[tuple[_FakeTimecode, _FakeTimecode]]:
             return [(_FakeTimecode(0.0), _FakeTimecode(12.5))]
@@ -95,6 +96,7 @@ def test_detect_converts_seconds_to_frames_and_saves_stats(monkeypatch: pytest.M
     assert captured["min_scene_len"] == 10
     assert captured["weights"].delta_edges == 0.2
     assert captured["stats_csv"] == tmp_path / "scene_stats.csv"
+    assert captured["show_progress"] is True
 
 
 def test_detect_returns_full_video_when_no_scenes_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -115,7 +117,7 @@ def test_detect_returns_full_video_when_no_scenes_found(monkeypatch: pytest.Monk
         def add_detector(self, detector: object) -> None:
             return None
 
-        def detect_scenes(self, video: _FakeVideo) -> None:
+        def detect_scenes(self, video: _FakeVideo, *, show_progress: bool = False) -> None:
             return None
 
         def get_scene_list(self) -> list[tuple[_FakeTimecode, _FakeTimecode]]:
@@ -137,3 +139,25 @@ def test_detect_returns_full_video_when_no_scenes_found(monkeypatch: pytest.Monk
     scenes = SceneDetectorService().detect(tmp_path / "video.mp4", threshold=27.0, min_segment_seconds=20)
 
     assert scenes == [{"start_sec": 0.0, "end_sec": 42.0}]
+
+
+def test_real_video_displays_processed_frames_percentage_and_speed(tmp_path, capsys):
+    cv2 = pytest.importorskip('cv2')
+    np = pytest.importorskip('numpy')
+    pytest.importorskip('scenedetect')
+    video = tmp_path / 'video.avi'
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*'MJPG'), 6, (64, 64))
+    assert writer.isOpened()
+    try:
+        for index in range(12):
+            writer.write(np.full((64, 64, 3), 0 if index < 6 else 255, dtype=np.uint8))
+    finally:
+        writer.release()
+
+    scenes = SceneDetectorService().detect(video, 15, 1, edge_weight=.3)
+    output = capsys.readouterr()
+    assert '12/12' in output.err
+    assert '100%' in output.err
+    assert 'frames/s' in output.err
+    assert '[DONE]' in output.out
+    assert scenes[-1]['end_sec'] == pytest.approx(2)

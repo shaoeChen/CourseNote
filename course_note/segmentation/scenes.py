@@ -4,6 +4,8 @@ import json
 import math
 from pathlib import Path
 
+from course_note.utils.progress import progress_stage
+
 
 class SceneDetectorService:
     def detect(
@@ -29,7 +31,12 @@ class SceneDetectorService:
         manager = SceneManager(StatsManager() if stats_csv_path else None)
         weights = ContentDetector.Components(delta_hue=1.0, delta_sat=1.0, delta_lum=1.0, delta_edges=edge_weight)
         manager.add_detector(ContentDetector(threshold=threshold, min_scene_len=min_scene_len_frames, weights=weights))
-        manager.detect_scenes(video)
+        with progress_stage(
+            f"場景偵測 threshold={threshold} edge_weight={edge_weight} min_segment_seconds={min_segment_seconds}",
+            video_path.parent / "pipeline.log",
+            interval=None,
+        ):
+            manager.detect_scenes(video, show_progress=True)
         if stats_csv_path and manager.stats_manager is not None:
             manager.stats_manager.save_to_csv(csv_file=stats_csv_path)
         scene_list = manager.get_scene_list()

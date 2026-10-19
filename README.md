@@ -252,6 +252,10 @@ course-note queue cs329a.txt
 
 `generate` 會固定輸出到 `workdir/<course-name>/article.md`；目前沒有 `--output` 參數。若要改變輸出根目錄，請使用 `--workdir`。`--course-name` 可省略，規則見〈`--course-name` 可以省略〉。
 
+下載字幕、音訊與影片時，終端機會即時顯示 `yt-dlp` 的下載進度與錯誤。場景偵測會顯示實際已處理／總影格、完成百分比、處理速度與預估剩餘時間；進度條只隨實際處理影格推進。語音轉錄會先顯示音訊準備與語言偵測階段，再以 faster-whisper 的原生進度條顯示已處理的有效音訊秒數、百分比、速度與預估剩餘時間（啟用 VAD 時會排除靜音，不一定等於原始影片長度）。讀取影片資訊、下載、載入語音模型、轉錄、場景偵測及擷取代表畫面會顯示開始與完成訊息；沒有原生進度條的耗時步驟每 10 秒回報等待狀態及已耗時間。重用字幕或影片快取時也會明確提示。
+
+上述階段的開始、等待、完成與可捕捉的失敗會追加寫入 `workdir/<course-name>/pipeline.log`；下載進度明細顯示在終端機。文字生成的詳細紀錄維持寫入 `text_generation.log`。若整個程序被強制終止，紀錄可能只留下最後開始或等待的階段。
+
 `bash`：
 
 ```bash
@@ -627,6 +631,8 @@ workdir/
     scenes.json
     segments.json
     llm_outputs.json
+    pipeline.log
+    text_generation.log
 ```
 
 ## 常用

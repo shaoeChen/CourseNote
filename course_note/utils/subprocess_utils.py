@@ -13,7 +13,28 @@ class CommandExecutionError(subprocess.CalledProcessError):
         return f"{message}\n{diagnostics}" if diagnostics else message
 
 
-def run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def run_command(command: Sequence[str], *, stream: bool = False) -> subprocess.CompletedProcess[str]:
+    if stream:
+        # Merge the streams to preserve ordering and avoid stderr pipe deadlocks.
+        with subprocess.Popen(
+            list(command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+        ) as process:
+            output: list[str] = []
+            try:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    output.append(line)
+                    print(line, end="", flush=True)
+                returncode = process.wait()
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+        captured = "".join(output)
+        if returncode:
+            raise CommandExecutionError(returncode, list(command), output=captured)
+        return subprocess.CompletedProcess(list(command), returncode, stdout=captured, stderr="")
     try:
         return subprocess.run(
             list(command),

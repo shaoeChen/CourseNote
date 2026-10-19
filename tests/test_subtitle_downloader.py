@@ -22,7 +22,15 @@ def test_transcription_detects_original_language(
 
         def transcribe(self, audio_path, **kwargs):
             calls.append(kwargs)
-            return iter([SimpleNamespace(start=0.0, end=2.0, text="Original speech")]), SimpleNamespace(language=detected_language)
+            assert '準備音訊與偵測語言' in (tmp_path / 'pipeline.log').read_text(encoding='utf-8')
+
+            def segments():
+                log = (tmp_path / 'pipeline.log').read_text(encoding='utf-8')
+                assert '[DONE] 準備音訊與偵測語言' in log
+                assert '[START] 語音轉錄' in log
+                yield SimpleNamespace(start=0.0, end=2.0, text="Original speech")
+
+            return segments(), SimpleNamespace(language=detected_language)
 
     monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel))
     monkeypatch.setitem(sys.modules, "ctranslate2", SimpleNamespace())
@@ -36,7 +44,7 @@ def test_transcription_detects_original_language(
     monkeypatch.setattr(downloader, "_run", run)
     result = downloader.download("https://example.com/video", tmp_path, preferred_language)
 
-    assert calls == [{"language": None, "task": "transcribe", "vad_filter": True}]
+    assert calls == [{"language": None, "task": "transcribe", "vad_filter": True, "log_progress": True}]
     assert result.language == detected_language
     assert result.source == "transcribed"
     assert "Original speech" in result.subtitle_path.read_text(encoding="utf-8")
